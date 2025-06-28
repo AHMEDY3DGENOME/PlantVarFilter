@@ -1,4 +1,5 @@
-# parser.py
+# src/plantvarfilter/parser.py
+
 import pandas as pd
 import gzip
 import io
@@ -11,16 +12,14 @@ def smart_open(file_or_path: Union[str, TextIO]) -> TextIO:
     """
     if isinstance(file_or_path, str):
         if file_or_path.endswith(".gz"):
-            return io.TextIOWrapper(gzip.open(file_or_path, "rb"), encoding="utf-8")
+            return gzip.open(file_or_path, "rt", encoding="utf-8")  # ✅ نص مباشرة
         else:
             return open(file_or_path, "r", encoding="utf-8")
     elif hasattr(file_or_path, 'read'):
-        if hasattr(file_or_path, 'name') and file_or_path.name.endswith(".gz"):
-            return io.TextIOWrapper(gzip.GzipFile(fileobj=file_or_path), encoding="utf-8")
-        else:
-            return io.TextIOWrapper(file_or_path, encoding="utf-8")
+        return file_or_path  # ✅ أرجع الـ stream زي ما هو
     else:
         raise ValueError("Unsupported file input type")
+
 
 def read_gene_traits(file_or_path: Union[str, TextIO]) -> pd.DataFrame:
     """
