@@ -1,7 +1,7 @@
 import pandas as pd
 import gzip
-import io
 import re
+
 
 def parse_info_field(info_str):
     info = {}
@@ -12,6 +12,7 @@ def parse_info_field(info_str):
         else:
             info[item] = True
     return info
+
 
 def parse_csq_field(info_dict, csq_header=None):
     csq_entries = info_dict.get("CSQ", "")
@@ -25,27 +26,34 @@ def parse_csq_field(info_dict, csq_header=None):
         parsed.append(fields)
     return parsed
 
-def improved_filter_variants(vcf_stream, include_intergenic=False):
+
+def improved_filter_variants(vcf_stream, include_intergenic=False, limit=None):
     variants = []
     csq_header = None
+    processed = 0
 
     if hasattr(vcf_stream, 'read'):
         lines = (line.decode('utf-8') if isinstance(line, bytes) else line for line in vcf_stream)
     else:
-        with gzip.open(vcf_stream, 'rt') if str(vcf_stream).endswith('.gz') else open(vcf_stream, 'r') as f:
-            lines = f.readlines()
+        lines = open(vcf_stream, 'rt') if isinstance(vcf_stream, str) else vcf_stream
 
     for line in lines:
+        if isinstance(line, bytes):
+            line = line.decode('utf-8')
+
         if line.startswith('##INFO=<ID=CSQ'):
             match = re.search(r'Format=([^">]+)', line)
             if match:
                 csq_header = match.group(1).split('|')
+
         elif line.startswith('#CHROM'):
-            header = line.strip().split('\t')
+            continue  # header line, already handled
+
         elif not line.startswith('#'):
             fields = line.strip().split('\t')
             if len(fields) < 8:
                 continue
+
             chrom, pos, vid, ref, alt, qual, flt, info_str = fields[:8]
             info_dict = parse_info_field(info_str)
             csq_entries = parse_csq_field(info_dict, csq_header)
@@ -56,10 +64,12 @@ def improved_filter_variants(vcf_stream, include_intergenic=False):
                         csq_data = dict(zip(csq_header[:len(csq)], csq))
                         consequence = csq_data.get("Consequence", "")
                         gene = csq_data.get("Gene", "")
+
                         if not consequence.strip():
                             continue
                         if "intergenic_variant" in consequence and not include_intergenic:
                             continue
+
                         variants.append({
                             "CHROM": chrom,
                             "POS": int(pos),
@@ -70,7 +80,6 @@ def improved_filter_variants(vcf_stream, include_intergenic=False):
                             "Gene": gene
                         })
             else:
-                # fallback for basic VCF
                 variants.append({
                     "CHROM": chrom,
                     "POS": int(pos),
@@ -81,7 +90,12 @@ def improved_filter_variants(vcf_stream, include_intergenic=False):
                     "Gene": None
                 })
 
+            processed += 1
+            if limit and processed >= limit:
+                break
+
     return pd.DataFrame(variants)
+
 
 def build_gene_db(gff_stream):
     gene_db = {}
@@ -90,12 +104,15 @@ def build_gene_db(gff_stream):
             line = line.decode('utf-8')
         if line.startswith('#'):
             continue
+
         parts = line.strip().split('\t')
         if len(parts) != 9:
             continue
+
         seqid, source, feature_type, start, end, score, strand, phase, attributes = parts
         if feature_type != 'gene':
             continue
+
         match = re.search(r'ID=([^;]+)', attributes)
         if match:
             gene_id = match.group(1)
@@ -105,7 +122,9 @@ def build_gene_db(gff_stream):
                 "end": int(end),
                 "strand": strand
             }
+
     return gene_db
+
 
 def read_gene_traits(file_obj):
     df = pd.read_csv(file_obj, sep=None, engine='python')
@@ -114,6 +133,7 @@ def read_gene_traits(file_obj):
     if "Gene_ID" in df.columns:
         df.rename(columns={"Gene_ID": "Gene"}, inplace=True)
     return df
+
 
 def annotate_variants_with_genes(variants_df, gene_db, include_intergenic=True):
     def find_gene(chrom, pos):
@@ -130,6 +150,7 @@ def annotate_variants_with_genes(variants_df, gene_db, include_intergenic=True):
         axis=1
     )
     return variants_df
+
 
 def annotate_with_traits(variants_df, traits_df, keep_unmatched=True):
     merged = variants_df.merge(

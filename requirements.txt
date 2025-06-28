@@ -1,6 +1,13 @@
-vcfpy
-gffutils
-pandas
-streamlit
-matplotlib
-seaborn
+# I/O & VCF/GFF handling
+vcfpy>=0.13.6
+gffutils>=0.11.1
+pandas>=1.5
+numpy>=1.22
+
+# Streamlit GUI
+streamlit>=1.32
+matplotlib>=3.5
+seaborn>=0.11
+
+# File parsing helpers
+pyarrow>=14.0.0
