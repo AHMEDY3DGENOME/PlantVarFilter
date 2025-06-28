@@ -11,6 +11,10 @@ from plantvarfilter.annotator import (
 )
 from plantvarfilter.parser import smart_open, read_gene_traits
 import os
+import tempfile
+import pyarrow.feather as feather
+
+CHUNK_SIZE = 10000
 
 def parse_info_field(info_str: str) -> dict:
     info = {}
@@ -18,7 +22,7 @@ def parse_info_field(info_str: str) -> dict:
         if '=' in item:
             key, value = item.split('=', 1)
             info[key] = value
-        elif item:  # skip empty strings
+        elif item:
             info[item] = True
     return info
 
@@ -28,32 +32,30 @@ def parse_csq_field(info_dict: dict, csq_header: Optional[list[str]] = None) -> 
         return []
     return [entry.split('|') for entry in csq_entries.split(',')]
 
-def improved_filter_variants(vcf_stream: Union[str, TextIO], include_intergenic: bool = False) -> pd.DataFrame:
+def improved_filter_variants(vcf_stream: Union[str, TextIO], include_intergenic: bool = False, store_as_feather=True) -> Union[pd.DataFrame, str]:
+    tmp_dir = tempfile.gettempdir()
+    feather_path = os.path.join(tmp_dir, "filtered_variants.feather")
     variants = []
     csq_header = None
+    count = 0
+    written = False
 
     def read_lines():
         if hasattr(vcf_stream, 'read'):
             for line in vcf_stream:
                 line = line.decode('utf-8') if isinstance(line, bytes) else line
-                print("📄 LINE:", line.strip())
                 yield line
         else:
             open_fn = gzip.open if str(vcf_stream).endswith('.gz') else open
             with open_fn(vcf_stream, 'rt') as f:
                 for line in f:
-                    print("📄 LINE:", line.strip())
                     yield line
 
     for line in read_lines():
         if line.startswith('##INFO=<ID=CSQ'):
-            print("📌 Found CSQ header line:", line.strip())
             match = re.search(r'Format=([^">]+)', line)
             if match:
                 csq_header = match.group(1).split('|')
-                print("✅ Extracted CSQ header:", csq_header)
-            else:
-                print("❌ Failed to extract CSQ format!")
         elif line.startswith('#CHROM'):
             continue
         elif not line.startswith('#'):
@@ -64,23 +66,14 @@ def improved_filter_variants(vcf_stream: Union[str, TextIO], include_intergenic:
             info_dict = parse_info_field(info_str)
             csq_entries = parse_csq_field(info_dict, csq_header)
 
-            print("🧪 INFO string:", info_str)
-            print("🧪 Parsed INFO dict:", info_dict)
-            print("🧪 Parsed CSQ entries:", csq_entries)
-
-            print(f"🔎 {chrom}:{pos} → Found {len(csq_entries)} CSQ entries")
-
             for csq in csq_entries:
                 csq_data = dict(zip(csq_header[:len(csq)], csq)) if csq_header else {}
                 consequence = csq_data.get("Consequence", "") or (csq[1] if len(csq) > 1 else "")
                 gene = csq_data.get("Feature", "") or (csq[3] if len(csq) > 3 else "")
 
-                print(f"   → Consequence: {consequence}, Gene: {gene}")
-
                 if not consequence.strip():
                     continue
                 if "intergenic_variant" in consequence and not include_intergenic:
-                    print("   ⚠ Skipped intergenic variant (not included)")
                     continue
 
                 variants.append({
@@ -93,8 +86,18 @@ def improved_filter_variants(vcf_stream: Union[str, TextIO], include_intergenic:
                     "Gene": gene
                 })
 
-    print(f"✅ Total variants after filtering: {len(variants)}")
-    return pd.DataFrame(variants)
+                count += 1
+                if count % CHUNK_SIZE == 0:
+                    chunk_df = pd.DataFrame(variants)
+                    feather.write_feather(chunk_df, feather_path) if not written else feather.write_feather(chunk_df, feather_path, compression='uncompressed')
+                    written = True
+                    variants = []
+
+    if variants:
+        chunk_df = pd.DataFrame(variants)
+        feather.write_feather(chunk_df, feather_path) if not written else feather.write_feather(chunk_df, feather_path, compression='uncompressed')
+
+    return feather_path
 
 def main():
     parser = argparse.ArgumentParser(
@@ -108,7 +111,7 @@ def main():
 
     args = parser.parse_args()
 
-    print("🚀 STARTING VARIANT FILTERING...")
+    print("\U0001F680 STARTING VARIANT FILTERING...")
 
     if not os.path.exists(args.vcf):
         print(f"❌ File not found: {args.vcf}")
@@ -124,7 +127,8 @@ def main():
 
     print("🔍 Reading VCF...")
     with (gzip.open(args.vcf) if args.vcf.endswith(".gz") else open(args.vcf, "rb")) as vcf_stream:
-        variants_df = improved_filter_variants(vcf_stream, include_intergenic=args.include_intergenic)
+        feather_path = improved_filter_variants(vcf_stream, include_intergenic=args.include_intergenic, store_as_feather=True)
+        variants_df = pd.read_feather(feather_path)
 
     print(f"✅ Total variants after filtering: {len(variants_df)}")
 
