@@ -1,0 +1,6 @@
+vcfpy
+gffutils
+pandas
+streamlit
+matplotlib
+seaborn
