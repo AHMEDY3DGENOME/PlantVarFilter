@@ -1,0 +1,25 @@
+[project]
+name = "plantvarfilter"
+version = "0.1.0"
+description = "Variant filtering and GWAS analysis tool for plant genomics."
+authors = [
+  { name = "Ahmed Yassin || Computational Biologist", email = "ahmedyassin300@outlook.com" }
+]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = [
+  "pandas",
+  "numpy",
+  "matplotlib",
+  "seaborn",
+  "scipy",
+  "pyarrow"
+]
+
+[project.scripts]
+plantvarfilter = "plantvarfilter.cli:main"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

@@ -19,19 +19,47 @@ import os
 import pyarrow.feather as feather
 from scipy import stats
 import numpy as np
+import json
 
-log_dir = Path.home() / "Desktop" / "PlantVarFilter_Outputs"
-os.makedirs(log_dir, exist_ok=True)
-log_file = log_dir / "run.log"
+log_file = None
 
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(log_file)
+        logging.StreamHandler(sys.stdout)
     ]
 )
+
+def initialize_user_data(path: str):
+    base_path = Path(path).expanduser().resolve()
+    input_dir = base_path / "input"
+    output_dir = base_path / "output"
+    config_path = base_path / "config.json"
+
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sample_config = {
+        "vcf": str(input_dir / "your_data.vcf.gz"),
+        "gff": str(input_dir / "your_annotation.gff3.gz"),
+        "traits": str(input_dir / "your_traits.csv"),
+        "include_intergenic": True,
+        "consequence_types": ["missense_variant", "stop_gained", "synonymous_variant", "frameshift_variant"],
+        "output_format": "csv",
+        "output": str(output_dir / "filtered_variants.csv"),
+        "plot": True,
+        "gwas": True,
+        "output_dir": str(output_dir)
+    }
+
+    with open(config_path, "w") as f:
+        json.dump(sample_config, f, indent=4)
+
+    print(f"✅ Project initialized at {base_path}")
+    print(f"📂 - Input folder: {input_dir}")
+    print(f"📂 - Output folder: {output_dir}")
+    print(f"📝 - Config file: {config_path}")
 
 def generate_plots(df: pd.DataFrame, output_dir: Path):
     plot_dir = output_dir / "plots"
@@ -54,15 +82,22 @@ def generate_plots(df: pd.DataFrame, output_dir: Path):
 
 def run_basic_gwas(df: pd.DataFrame, traits_df: pd.DataFrame, output_dir: Path):
     result_path = output_dir / "gwas_basic_results.csv"
-    manhattan_path = output_dir / "plots" / "manhattan_plot.png"
+    plot_dir = output_dir / "plots"
+    plot_dir.mkdir(exist_ok=True)
+    manhattan_path = plot_dir / "manhattan_plot.png"
+
     if "Gene" not in df.columns:
         logging.warning("❗ GWAS skipped: 'Gene' column missing.")
         return
 
-    logging.info("🧬 Running basic GWAS analysis (t-test)...")
+    logging.info("Running basic GWAS analysis (t-test)...")
     gwas_results = []
 
     traits_df.columns = traits_df.columns.str.strip()
+    if "Trait_Score" not in traits_df.columns:
+        logging.warning("❗ GWAS skipped: 'Trait_Score' column missing in traits file.")
+        return
+
     all_genes = traits_df["Gene"].unique()
     for gene in all_genes:
         group1 = traits_df[traits_df["Gene"] == gene]["Trait_Score"].astype(float)
@@ -80,11 +115,11 @@ def run_basic_gwas(df: pd.DataFrame, traits_df: pd.DataFrame, output_dir: Path):
                 "P_Value": p_value
             })
         except Exception as e:
-            logging.warning(f"⚠ Error in GWAS for gene {gene}: {e}")
+            logging.warning(f"Error in GWAS for gene {gene}: {e}")
 
     results_df = pd.DataFrame(gwas_results)
     results_df.to_csv(result_path, index=False)
-    logging.info(f"✅ GWAS results saved to: {result_path}")
+    logging.info(f"GWAS results saved to: {result_path}")
 
     if not results_df.empty:
         results_df = results_df.dropna(subset=["P_Value"])
@@ -98,97 +133,124 @@ def run_basic_gwas(df: pd.DataFrame, traits_df: pd.DataFrame, output_dir: Path):
             plt.tight_layout()
             plt.savefig(manhattan_path)
             plt.close()
-            logging.info(f"📈 Manhattan Plot saved to: {manhattan_path}")
+            logging.info(f"Manhattan Plot saved to: {manhattan_path}")
         else:
-            logging.warning("❗ No valid P-values for Manhattan Plot.")
+            logging.warning("No valid P-values for Manhattan Plot.")
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="PlantVarFilter: Command-line variant filtering for plant genomics"
-    )
-    parser.add_argument("--vcf", required=True, help="Path to VCF or VCF.GZ file")
-    parser.add_argument("--gff", required=True, help="Path to GFF3 or GFF3.GZ file")
-    parser.add_argument("--traits", required=True, help="Path to gene trait annotation file (CSV/TSV)")
-    parser.add_argument("--include-intergenic", action="store_true", help="Include intergenic variants")
-    parser.add_argument("--output", default=None, help="Output file name")
-    parser.add_argument("--output-format", choices=["csv", "tsv", "json", "feather", "xlsx"], default="csv", help="Output format")
-    parser.add_argument("--consequence-types", nargs="*", help="Filter by consequence types (e.g. missense_variant stop_gained)")
-    parser.add_argument("--plot", action="store_true", help="Generate plots of results")
-    parser.add_argument("--gwas", action="store_true", help="Run basic GWAS analysis")
+def load_config_file(path):
+    if not path:
+        return None
+    if not os.path.exists(path):
+        logging.error(f"Config file not found: {path}")
+        sys.exit(1)
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        logging.error(f"Failed to load config file: {e}")
+        sys.exit(1)
 
-    args = parser.parse_args()
+def run_pipeline(config):
+    def get_value(key):
+        return config.get(key)
 
-    logging.info("🚀 STARTING VARIANT FILTERING...")
+    try:
+        vcf_path = Path(get_value("vcf"))
+        gff_path = Path(get_value("gff"))
+        traits_path = Path(get_value("traits"))
+    except Exception as e:
+        logging.error(f"Invalid path in config: {e}")
+        sys.exit(1)
 
-    for label, path in [("VCF", args.vcf), ("GFF", args.gff), ("Traits", args.traits)]:
-        if not os.path.exists(path):
-            logging.error(f"❌ File not found: {path}")
+    for label, path in [("VCF", vcf_path), ("GFF", gff_path), ("Traits", traits_path)]:
+        if not path.exists():
+            logging.error(f"{label} file not found at: {path}")
             sys.exit(1)
 
-    start_time = time.time()
+    output_path = Path(get_value("output"))
+    output_dir = Path(get_value("output_dir")) if get_value("output_dir") else output_path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    logging.info("🔍 Reading VCF...")
-    with (gzip.open(args.vcf) if args.vcf.endswith(".gz") else open(args.vcf, "rb")) as vcf_stream:
+    global log_file
+    log_file = output_dir / "run.log"
+    logging.getLogger().handlers.clear()
+    logging.basicConfig(
+        level=logging.INFO,
+        format='[%(asctime)s] %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(log_file)
+        ]
+    )
+
+    logging.info("Reading VCF...")
+    with (gzip.open(vcf_path) if str(vcf_path).endswith(".gz") else open(vcf_path, "rb")) as vcf_stream:
         feather_path = improved_filter_variants(
             vcf_stream,
-            include_intergenic=args.include_intergenic,
+            include_intergenic=get_value("include_intergenic"),
             store_as_feather=True,
-            consequence_types=args.consequence_types
+            consequence_types=get_value("consequence_types")
         )
         variants_df = pd.read_feather(feather_path)
 
-    logging.info(f"✅ Total variants after filtering: {len(variants_df)}")
-
     if variants_df.empty:
-        logging.warning("❌ No variants found after filtering.")
+        logging.warning("No variants found after filtering.")
         sys.exit(1)
 
-    logging.info("📖 Building gene database from GFF...")
-    with (gzip.open(args.gff) if args.gff.endswith(".gz") else open(args.gff, "rb")) as gff_stream:
+    logging.info("Building gene database...")
+    with (gzip.open(gff_path) if str(gff_path).endswith(".gz") else open(gff_path, "rb")) as gff_stream:
         gene_db = build_gene_db(gff_stream)
 
-    logging.info(f"✅ Gene DB loaded: {len(gene_db)} genes")
+    logging.info("Annotating variants with genes...")
+    annotated_df = annotate_variants_with_genes(variants_df, gene_db, include_intergenic=get_value("include_intergenic"))
 
-    logging.info("🧬 Annotating variants with genes...")
-    annotated_df = annotate_variants_with_genes(variants_df, gene_db, include_intergenic=args.include_intergenic)
+    logging.info("Reading trait data...")
+    traits_df = read_gene_traits(traits_path)
 
-    logging.info("📄 Reading gene traits...")
-    with smart_open(args.traits) as traits_file:
-        traits_df = read_gene_traits(traits_file)
-
-    logging.info(f"📊 Traits loaded: {len(traits_df)} entries")
-
-    logging.info("🔗 Annotating variants with traits...")
+    logging.info("Annotating variants with traits...")
     final_df = annotate_with_traits(annotated_df, traits_df)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    default_name = f"filtered_variants_{timestamp}.{args.output_format}"
-    output_filename = args.output or default_name
-    output_path = log_dir / output_filename
-
-    logging.info(f"📂 Saving results to: {output_path}")
-
-    if args.output_format == "csv":
+    fmt = get_value("output_format")
+    if fmt == "csv":
         final_df.to_csv(output_path, index=False)
-    elif args.output_format == "tsv":
-        final_df.to_csv(output_path, sep='\t', index=False)
-    elif args.output_format == "json":
+    elif fmt == "tsv":
+        final_df.to_csv(output_path, sep="\t", index=False)
+    elif fmt == "json":
         final_df.to_json(output_path, orient="records", lines=True)
-    elif args.output_format == "feather":
+    elif fmt == "feather":
         feather.write_feather(final_df, output_path)
-    elif args.output_format == "xlsx":
+    elif fmt == "xlsx":
         final_df.to_excel(output_path, index=False)
 
-    if args.plot:
-        logging.info("📈 Generating plots...")
-        generate_plots(final_df, log_dir)
+    if get_value("plot"):
+        logging.info("Generating plots...")
+        generate_plots(final_df, output_dir)
 
-    if args.gwas:
-        run_basic_gwas(final_df, traits_df, log_dir)
+    if get_value("gwas"):
+        run_basic_gwas(final_df, traits_df, output_dir)
 
-    elapsed = round(time.time() - start_time, 2)
-    logging.info(f"✅ Done in {elapsed} seconds.")
-    logging.shutdown()
+    elapsed = round(time.time() - config.get("start_time", time.time()), 2)
+    logging.info(f"Done in {elapsed} seconds.")
+
+def main():
+    parser = argparse.ArgumentParser(description="PlantVarFilter - Variant Filtering for Plant Genomics")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    init_parser = subparsers.add_parser("init", help="Initialize a project in a custom directory")
+    init_parser.add_argument("path", type=str, help="Target directory to create the project in")
+
+    run_parser = subparsers.add_parser("run", help="Run the full analysis pipeline")
+    run_parser.add_argument("--config", help="Optional path to config.json")
+
+    args = parser.parse_args()
+
+    if args.command == "init":
+        initialize_user_data(args.path)
+    elif args.command == "run":
+        config_path = args.config or (Path.home() / ".plantvarfilter_data" / "config.json")
+        config = load_config_file(config_path)
+        config["start_time"] = time.time()
+        run_pipeline(config)
 
 if __name__ == "__main__":
     main()

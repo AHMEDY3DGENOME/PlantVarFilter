@@ -1,27 +1,27 @@
-from .filter import (
-    parse_info_field,
-    parse_csq_field,
-    improved_filter_variants
-)
+import os
+from pathlib import Path
+import json
 
-from .annotator import (
-    build_gene_db,
-    annotate_variants_with_genes,
-    annotate_with_traits
-)
+USER_DATA_DIR = Path.home() / ".plantvarfilter_data"
+CONFIG_PATH = USER_DATA_DIR / "config.json"
+EXAMPLE_CONFIG = {
+    "vcf": "input/your_data.vcf.gz",
+    "gff": "input/your_genes.gff3.gz",
+    "traits": "input/your_traits.csv",
+    "include_intergenic": True,
+    "consequence_types": ["missense_variant", "stop_gained"],
+    "output_format": "csv",
+    "output": "filtered_output.csv",
+    "plot": True,
+    "gwas": True
+}
 
-from .parser import (
-    smart_open,
-    read_gene_traits
-)
-
-__all__ = [
-    "parse_info_field",
-    "parse_csq_field",
-    "improved_filter_variants",
-    "build_gene_db",
-    "annotate_variants_with_genes",
-    "annotate_with_traits",
-    "smart_open",
-    "read_gene_traits"
-]
+def initialize_user_data():
+    """
+    Create ~/.plantvarfilter_data/ with input/, output/, and default config.json if not exists.
+    """
+    if not USER_DATA_DIR.exists():
+        os.makedirs(USER_DATA_DIR / "input", exist_ok=True)
+        os.makedirs(USER_DATA_DIR / "output", exist_ok=True)
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(EXAMPLE_CONFIG, f, indent=2)
