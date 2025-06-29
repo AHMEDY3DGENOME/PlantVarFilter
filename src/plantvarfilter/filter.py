@@ -1,20 +1,20 @@
-import argparse
 import gzip
-import sys
 import pandas as pd
 import re
-from typing import Union, TextIO, Optional
-from plantvarfilter.annotator import (
-    build_gene_db,
-    annotate_variants_with_genes,
-    annotate_with_traits,
-)
-from plantvarfilter.parser import smart_open, read_gene_traits
-import os
 import tempfile
+from typing import Union, TextIO, Optional
 import pyarrow.feather as feather
-
+import logging
+import os
 CHUNK_SIZE = 10000
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 
 def parse_info_field(info_str: str) -> dict:
     info = {}
@@ -32,13 +32,30 @@ def parse_csq_field(info_dict: dict, csq_header: Optional[list[str]] = None) -> 
         return []
     return [entry.split('|') for entry in csq_entries.split(',')]
 
-def improved_filter_variants(vcf_stream: Union[str, TextIO], include_intergenic: bool = False, store_as_feather=True) -> Union[pd.DataFrame, str]:
+def classify_variant_type(ref: str, alt: str) -> str:
+    if len(ref) == 1 and len(alt) == 1:
+        return "SNV"
+    elif len(ref) < len(alt):
+        return "Insertion"
+    elif len(ref) > len(alt):
+        return "Deletion"
+    else:
+        return "Complex"
+
+def improved_filter_variants(
+    vcf_stream: Union[str, TextIO],
+    include_intergenic: bool = False,
+    store_as_feather: bool = True,
+    consequence_types: Optional[list[str]] = None
+) -> Union[pd.DataFrame, str]:
     tmp_dir = tempfile.gettempdir()
     feather_path = os.path.join(tmp_dir, "filtered_variants.feather")
     variants = []
     csq_header = None
     count = 0
     written = False
+    skipped_intergenic = 0
+    skipped_no_consequence = 0
 
     def read_lines():
         if hasattr(vcf_stream, 'read'):
@@ -65,6 +82,7 @@ def improved_filter_variants(vcf_stream: Union[str, TextIO], include_intergenic:
             chrom, pos, vid, ref, alt, _, _, info_str = fields[:8]
             info_dict = parse_info_field(info_str)
             csq_entries = parse_csq_field(info_dict, csq_header)
+            variant_type = classify_variant_type(ref, alt)
 
             for csq in csq_entries:
                 csq_data = dict(zip(csq_header[:len(csq)], csq)) if csq_header else {}
@@ -72,8 +90,12 @@ def improved_filter_variants(vcf_stream: Union[str, TextIO], include_intergenic:
                 gene = csq_data.get("Feature", "") or (csq[3] if len(csq) > 3 else "")
 
                 if not consequence.strip():
+                    skipped_no_consequence += 1
                     continue
                 if "intergenic_variant" in consequence and not include_intergenic:
+                    skipped_intergenic += 1
+                    continue
+                if consequence_types and all(ct not in consequence for ct in consequence_types):
                     continue
 
                 variants.append({
@@ -82,6 +104,7 @@ def improved_filter_variants(vcf_stream: Union[str, TextIO], include_intergenic:
                     "ID": vid,
                     "REF": ref,
                     "ALT": alt,
+                    "Variant_Type": variant_type,
                     "Consequence": consequence,
                     "Gene": gene
                 })
@@ -97,66 +120,7 @@ def improved_filter_variants(vcf_stream: Union[str, TextIO], include_intergenic:
         chunk_df = pd.DataFrame(variants)
         feather.write_feather(chunk_df, feather_path) if not written else feather.write_feather(chunk_df, feather_path, compression='uncompressed')
 
+    logging.info(f"\U0001F4CC Skipped variants with no consequence: {skipped_no_consequence}")
+    logging.info(f"\U0001F4CC Skipped intergenic variants (excluded): {skipped_intergenic}")
+
     return feather_path
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="PlantVarFilter: Command-line variant filtering for plant genomics"
-    )
-    parser.add_argument("--vcf", required=True, help="Path to VCF or VCF.GZ file")
-    parser.add_argument("--gff", required=True, help="Path to GFF3 or GFF3.GZ file")
-    parser.add_argument("--traits", required=True, help="Path to gene trait annotation file (CSV/TSV)")
-    parser.add_argument("--include-intergenic", action="store_true", help="Include intergenic variants")
-    parser.add_argument("--output", default="filtered_variants.csv", help="Output CSV file")
-
-    args = parser.parse_args()
-
-    print("\U0001F680 STARTING VARIANT FILTERING...")
-
-    if not os.path.exists(args.vcf):
-        print(f"❌ File not found: {args.vcf}")
-        sys.exit(1)
-
-    if not os.path.exists(args.gff):
-        print(f"❌ File not found: {args.gff}")
-        sys.exit(1)
-
-    if not os.path.exists(args.traits):
-        print(f"❌ File not found: {args.traits}")
-        sys.exit(1)
-
-    print("🔍 Reading VCF...")
-    with (gzip.open(args.vcf) if args.vcf.endswith(".gz") else open(args.vcf, "rb")) as vcf_stream:
-        feather_path = improved_filter_variants(vcf_stream, include_intergenic=args.include_intergenic, store_as_feather=True)
-        variants_df = pd.read_feather(feather_path)
-
-    print(f"✅ Total variants after filtering: {len(variants_df)}")
-
-    if variants_df.empty:
-        print("❌ No variants found after filtering.")
-        sys.exit(1)
-
-    print("📖 Building gene database from GFF...")
-    with (gzip.open(args.gff) if args.gff.endswith(".gz") else open(args.gff, "rb")) as gff_stream:
-        gene_db = build_gene_db(gff_stream)
-
-    print(f"✅ Gene DB loaded: {len(gene_db)} genes")
-
-    print("🧜‍♂️ Annotating variants with genes...")
-    annotated_df = annotate_variants_with_genes(variants_df, gene_db, include_intergenic=args.include_intergenic)
-
-    print("📄 Reading gene traits...")
-    with smart_open(args.traits) as traits_file:
-        traits_df = read_gene_traits(traits_file)
-
-    print(f"📊 Traits loaded: {len(traits_df)} entries")
-
-    print("🔗 Annotating variants with traits...")
-    final_df = annotate_with_traits(annotated_df, traits_df)
-
-    print(f"📂 Saving results to: {args.output}")
-    final_df.to_csv(args.output, index=False)
-    print("✅ Done.")
-
-if __name__ == "__main__":
-    main()
