@@ -17,7 +17,10 @@ from pathlib import Path
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(Path.home() / "Desktop" / "PlantVarFilter_Outputs" / "run.log")
+    ]
 )
 
 def main():
@@ -29,8 +32,12 @@ def main():
     parser.add_argument("--traits", required=True, help="Path to gene trait annotation file (CSV/TSV)")
     parser.add_argument("--include-intergenic", action="store_true", help="Include intergenic variants")
     parser.add_argument("--output", default="filtered_variants.csv", help="Output CSV file name")
+    parser.add_argument("--consequence-types", nargs="*", help="Filter by consequence types (e.g. missense_variant stop_gained)")
 
     args = parser.parse_args()
+
+    desktop_output_dir = Path.home() / "Desktop" / "PlantVarFilter_Outputs"
+    desktop_output_dir.mkdir(parents=True, exist_ok=True)
 
     logging.info("🚀 STARTING VARIANT FILTERING...")
 
@@ -43,7 +50,11 @@ def main():
 
     logging.info("🔍 Reading VCF...")
     with (gzip.open(args.vcf) if args.vcf.endswith(".gz") else open(args.vcf, "rb")) as vcf_stream:
-        variants_df = improved_filter_variants(vcf_stream, include_intergenic=args.include_intergenic)
+        variants_df = improved_filter_variants(
+            vcf_stream,
+            include_intergenic=args.include_intergenic,
+            consequence_types=args.consequence_types
+        )
 
     if isinstance(variants_df, str):
         variants_df = pd.read_feather(variants_df)
@@ -72,8 +83,6 @@ def main():
     logging.info("🔗 Annotating variants with traits...")
     final_df = annotate_with_traits(annotated_df, traits_df)
 
-    desktop_output_dir = Path.home() / "Desktop" / "PlantVarFilter_Outputs"
-    desktop_output_dir.mkdir(parents=True, exist_ok=True)
     output_path = desktop_output_dir / args.output
 
     logging.info(f"📂 Saving results to: {output_path}")
