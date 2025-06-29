@@ -4,13 +4,15 @@ import pandas as pd
 import gzip
 import io
 from typing import Union, TextIO
+from pathlib import Path
 
-def smart_open(file_or_path: Union[str, TextIO]) -> TextIO:
+def smart_open(file_or_path: Union[str, Path, TextIO]) -> TextIO:
     """
     Open a file or stream (optionally gzip-compressed) and return a text stream.
-    Supports file-like objects and string paths.
+    Supports file-like objects, string paths, and pathlib.Path.
     """
-    if isinstance(file_or_path, str):
+    if isinstance(file_or_path, (str, Path)):
+        file_or_path = str(file_or_path)  # Ensure it's a string path
         if file_or_path.endswith(".gz"):
             return gzip.open(file_or_path, "rt", encoding="utf-8")
         else:
@@ -19,6 +21,7 @@ def smart_open(file_or_path: Union[str, TextIO]) -> TextIO:
         return file_or_path
     else:
         raise ValueError("Unsupported file input type")
+
 
 
 def read_gene_traits(file_or_path: Union[str, TextIO]) -> pd.DataFrame:
