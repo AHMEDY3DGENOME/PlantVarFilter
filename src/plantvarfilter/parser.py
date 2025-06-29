@@ -12,11 +12,11 @@ def smart_open(file_or_path: Union[str, TextIO]) -> TextIO:
     """
     if isinstance(file_or_path, str):
         if file_or_path.endswith(".gz"):
-            return gzip.open(file_or_path, "rt", encoding="utf-8")  # ✅ نص مباشرة
+            return gzip.open(file_or_path, "rt", encoding="utf-8")
         else:
             return open(file_or_path, "r", encoding="utf-8")
     elif hasattr(file_or_path, 'read'):
-        return file_or_path  # ✅ أرجع الـ stream زي ما هو
+        return file_or_path
     else:
         raise ValueError("Unsupported file input type")
 
