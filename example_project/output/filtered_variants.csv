@@ -1,0 +1,5 @@
+CHROM,POS,ID,REF,ALT,Variant_Type,Consequence,Gene,Trait_Score
+1,1010,rs1001,A,G,SNV,geneX,,
+1,2020,rs1002,T,C,SNV,geneY,,
+2,3030,rs1003,G,A,SNV,geneZ,,
+3,4040,rs1004,C,T,SNV,geneW,,

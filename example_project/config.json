@@ -1,0 +1,5 @@
+{
+  "plot_only": true,
+  "output_dir": "/home/ahmed/Desktop/PlantTestRun/output",
+  "gwas_results": "/home/ahmed/Desktop/PlantTestRun/output/gwas_basic_results.csv"
+}

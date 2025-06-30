@@ -59,7 +59,7 @@ def initialize_user_data(path: str):
     print(f"✅ Project initialized at {base_path}")
     print(f"📂 - Input folder: {input_dir}")
     print(f"📂 - Output folder: {output_dir}")
-    print(f"📝 - Config file: {config_path}")
+    print(f"🗘️ - Config file: {config_path}")
 
 def generate_plots(df: pd.DataFrame, output_dir: Path):
     plot_dir = output_dir / "plots"
@@ -242,6 +242,9 @@ def main():
     run_parser = subparsers.add_parser("run", help="Run the full analysis pipeline")
     run_parser.add_argument("--config", help="Optional path to config.json")
 
+    plot_parser = subparsers.add_parser("plot-only", help="Generate plots from existing GWAS results CSV")
+    plot_parser.add_argument("--config", type=str, help="Path to config file (should contain gwas_results and output_dir)")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -251,6 +254,35 @@ def main():
         config = load_config_file(config_path)
         config["start_time"] = time.time()
         run_pipeline(config)
+    elif args.command == "plot-only":
+        config_path = args.config or (Path.home() / ".plantvarfilter_data" / "config.json")
+        config = load_config_file(config_path)
+        gwas_file = config.get("gwas_results")
+        output_dir = Path(config.get("output_dir", "."))
+
+        if not gwas_file or not os.path.exists(gwas_file):
+            logging.error(f"GWAS results file not found: {gwas_file}")
+            sys.exit(1)
+
+        df = pd.read_csv(gwas_file)
+        df = df.dropna(subset=["P_Value"])
+        if df.empty:
+            logging.warning("No valid P-values to plot.")
+            sys.exit(0)
+
+        plot_dir = output_dir / "plots"
+        plot_dir.mkdir(exist_ok=True)
+
+        df["-log10(P_Value)"] = -np.log10(df["P_Value"])
+        plt.figure(figsize=(12, 6))
+        plt.scatter(range(len(df)), df["-log10(P_Value)"])
+        plt.title("Manhattan Plot (from existing file)")
+        plt.xlabel("Gene Index")
+        plt.ylabel("-log10(P-value)")
+        plt.tight_layout()
+        plt.savefig(plot_dir / "manhattan_plot_from_file.png")
+        plt.close()
+        logging.info(f"✅ Manhattan Plot generated from: {gwas_file}")
 
 if __name__ == "__main__":
     main()
