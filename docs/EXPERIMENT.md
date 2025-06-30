@@ -30,7 +30,27 @@ The analysis was performed from the terminal using the following sequence of com
 ```bash
 python -m plantvarfilter init /home/ahmed/Desktop/Test_01_Zea_mays
 
-# (Edit the config file at /home/ahmed/Desktop/Test_01_Zea_mays/config.json to set correct input/output paths)
+# json file with data
+bash```
+{
+    "vcf": "/home/ahmed/Desktop/Test_01_Zea_mays/input/zea_mays_incl_consequences.vcf.gz",
+    "gff": "/home/ahmed/Desktop/Test_01_Zea_mays/input/Zea_mays.Zm-B73-REFERENCE-NAM-5.0.61.gff3.gz",
+    "traits": "/home/ahmed/Desktop/Test_01_Zea_mays/input/traits_score.csv",
+    "include_intergenic": true,
+    "consequence_types": [
+        "missense_variant",
+        "stop_gained",
+        "synonymous_variant",
+        "frameshift_variant"
+    ],
+    "output_format": "csv",
+    "output": "/home/ahmed/Desktop/Test_01_Zea_mays/output/filtered_variants.csv",
+    "plot": true,
+    "gwas": true,
+    "output_dir": "/home/ahmed/Desktop/Test_01_Zea_mays/output"
+}
+
+```
 
 python -m plantvarfilter run --config /home/ahmed/Desktop/Test_01_Zea_mays/config.json
 
