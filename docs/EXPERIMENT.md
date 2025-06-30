@@ -37,21 +37,21 @@ python -m plantvarfilter run --config /home/ahmed/Desktop/Test_01_Zea_mays/confi
 python -m plantvarfilter plot-only --config /home/ahmed/Desktop/Test_01_Zea_mays/config_plot.json
 ```
 
-## The pipeline processed a ~500 MB compressed VCF file and a 12 MB compressed GFF3 annotation file.
-## The entire analysis, from variant filtering to GWAS and plot generation, completed in approximately 6 minutes on the test system.
+### The pipeline processed a ~500 MB compressed VCF file and a 12 MB compressed GFF3 annotation file.
+### The entire analysis, from variant filtering to GWAS and plot generation, completed in approximately 6 minutes on the test system.
 
 ### 3.3 Output
-# Filtered variant data saved as CSV at ```/home/ahmed/Desktop/Test_01_Zea_mays/output/filtered_variants.csv.```
-# GWAS summary statistics saved as CSV at ```/home/ahmed/Desktop/Test_01_Zea_mays/output/gwas_basic_results.csv.```
-# Visualizations including Manhattan plots and variant consequence distributions saved under ```/home/ahmed/Desktop/Test_01_Zea_mays/output/plots/.```
+### Filtered variant data saved as CSV at ```/home/ahmed/Desktop/Test_01_Zea_mays/output/filtered_variants.csv.```
+### GWAS summary statistics saved as CSV at ```/home/ahmed/Desktop/Test_01_Zea_mays/output/gwas_basic_results.csv.```
+### Visualizations including Manhattan plots and variant consequence distributions saved under ```/home/ahmed/Desktop/Test_01_Zea_mays/output/plots/.```
 
-# 4 Results
+### 4 Results
 ### The PlantVarFilter pipeline efficiently handles large-scale plant genomic data and produces meaningful variant-trait associations and visualizations.
 ### This first real-data test validates the workflow's robustness and performance, setting the stage for further biological interpretation and pipeline enhancements.
 
 ### Data retrieved from Ensembl Plants FTP server: https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/current/gff3/
 
-## Analysis performed using PlantVarFilter package version 0.1.0
+### Analysis performed using PlantVarFilter package version 0.1.0
 
 ### Prepared by: Ahmed Yassin || Computational Biologist
-# Date: 2025-07-01
+#### Date: 2025-07-01
