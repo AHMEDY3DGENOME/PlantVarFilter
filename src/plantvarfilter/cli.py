@@ -15,11 +15,13 @@ from plantvarfilter.annotator import (
     annotate_with_traits,
 )
 from plantvarfilter.parser import smart_open, read_gene_traits
+from plantvarfilter import run_regression_gwas  # ✅ Added here
 import os
 import pyarrow.feather as feather
 from scipy import stats
 import numpy as np
 import json
+from sklearn.linear_model import LinearRegression
 
 log_file = None
 
@@ -136,6 +138,41 @@ def run_basic_gwas(df: pd.DataFrame, traits_df: pd.DataFrame, output_dir: Path):
             logging.info(f"Manhattan Plot saved to: {manhattan_path}")
         else:
             logging.warning("No valid P-values for Manhattan Plot.")
+def run_multi_trait_gwas_sklearn(variant_df: pd.DataFrame, traits_df: pd.DataFrame, output_path: str):
+    if "Gene" not in variant_df.columns:
+        logging.error("❌ Column 'Gene' missing in variant data.")
+        return
+
+    trait_cols = [col for col in traits_df.columns if col != "Gene"]
+    if len(trait_cols) < 2:
+        logging.error("❌ At least 2 traits required for multi-trait GWAS.")
+        return
+
+    variant_genes = set(variant_df["Gene"])
+    traits_df["Has_Variant"] = traits_df["Gene"].apply(lambda g: 1 if g in variant_genes else 0)
+
+    results = []
+    for trait in trait_cols:
+        try:
+            X = traits_df[["Has_Variant"]].values
+            y = traits_df[trait].values
+            model = LinearRegression()
+            model.fit(X, y)
+            coef = model.coef_[0]
+            r2 = model.score(X, y)
+            results.append({
+                "Trait": trait,
+                "Effect_of_Variant": coef,
+                "R_squared": r2
+            })
+        except Exception as e:
+            logging.warning(f"⚠️ Failed to process trait {trait}: {e}")
+
+    results_df = pd.DataFrame(results)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    results_df.to_csv(output_path, index=False)
+    logging.info(f"✅ Multi-trait GWAS (sklearn) saved to: {output_path}")
+
 
 def load_config_file(path):
     if not path:
@@ -227,10 +264,15 @@ def run_pipeline(config):
         generate_plots(final_df, output_dir)
 
     if get_value("gwas"):
-        run_basic_gwas(final_df, traits_df, output_dir)
+        if "Trait_Score" in traits_df.columns:
+            run_basic_gwas(final_df, traits_df, output_dir)
+            run_regression_gwas(final_df, traits_df, str(output_dir / "gwas_regression_results.csv"))
+        else:
+            logging.warning("⚠️ Skipping basic GWAS: 'Trait_Score' column not found. Only multi-trait GWAS will run.")
 
-    elapsed = round(time.time() - config.get("start_time", time.time()), 2)
-    logging.info(f"Done in {elapsed} seconds.")
+    if get_value("multi_trait_gwas"):
+        run_multi_trait_gwas_sklearn(final_df, traits_df, get_value("multi_trait_output"))
+
 
 def main():
     parser = argparse.ArgumentParser(description="PlantVarFilter - Variant Filtering for Plant Genomics")
