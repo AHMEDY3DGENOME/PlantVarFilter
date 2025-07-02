@@ -25,3 +25,6 @@ def initialize_user_data():
         os.makedirs(USER_DATA_DIR / "output", exist_ok=True)
         with open(CONFIG_PATH, "w") as f:
             json.dump(EXAMPLE_CONFIG, f, indent=2)
+
+#Import regression GWAS so it's available directly from the package
+from .regression_gwas import run_regression_gwas
