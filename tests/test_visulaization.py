@@ -14,7 +14,6 @@ def test_plot_trait_counts_basic():
     assert isinstance(fig, plt.Figure)
 
 def test_plot_trait_counts_empty_after_dropna():
-    # بيانات كلها None في العمود المطلوب
     df = pd.DataFrame({"Trait": [None, None]})
     with pytest.raises(ValueError, match="No traits to plot."):
         plot_trait_counts(df, trait_column="Trait")

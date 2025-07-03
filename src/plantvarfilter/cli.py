@@ -15,7 +15,7 @@ from plantvarfilter.annotator import (
     annotate_with_traits,
 )
 from plantvarfilter.parser import smart_open, read_gene_traits
-from plantvarfilter import run_regression_gwas  # ✅ Added here
+from plantvarfilter import run_regression_gwas
 import os
 import pyarrow.feather as feather
 from scipy import stats
