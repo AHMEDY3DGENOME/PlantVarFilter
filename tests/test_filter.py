@@ -29,5 +29,5 @@ def test_improved_filter_variants_reads_and_filters(tmp_path):
     df = pd.read_feather(output_path)
     assert len(df) == 1
     assert df["POS"].iloc[0] == 1000
-    assert "missense_variant" in df["Consequence"].iloc[0]  # ✅ بدل CSQ
+    assert "missense_variant" in df["Consequence"].iloc[0]
 
