@@ -1,5 +1,7 @@
 # PlantVarFilter
 
+[![PyPI version](https://badge.fury.io/py/plantvarfilter.svg)](https://pypi.org/project/plantvarfilter/0.1.0/)
+
 **PlantVarFilter** is a Python toolkit designed for efficient filtering and annotation of plant genomic variants, enabling researchers to link genetic variants with phenotypic traits and perform preliminary genome-wide association studies (GWAS). It addresses challenges in handling large variant datasets and supports integrative analysis combining genomic and trait data.
 
 > ⚠️ Requires **Python 3.12+**  
