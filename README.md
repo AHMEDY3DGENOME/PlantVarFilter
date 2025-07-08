@@ -8,6 +8,15 @@
 
 
 ---
+# Citations: 
+> This tool is described in the following preprint:
+
+**Ahmed Yassin** (2025). *PlantVarFilter: A flexible tool for variant filtering and multi-trait GWAS analysis in plants*. bioRxiv.  
+[https://doi.org/10.1101/2025.07.02.662805] 
+
+ Please cite this work if you use PlantVarFilter in your research.
+
+
 
 ## Features:
 
