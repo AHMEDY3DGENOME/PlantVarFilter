@@ -2,6 +2,7 @@ import pandas as pd
 import re
 
 def build_gene_db(gff_stream):
+    """Reads a GFF3 file stream and builds a gene database as a dict."""
     gene_db = {}
     for line in gff_stream:
         line = line.decode('utf-8') if isinstance(line, bytes) else line
@@ -21,7 +22,13 @@ def build_gene_db(gff_stream):
     print(f"✅ Gene DB built with {len(gene_db)} entries")
     return gene_db
 
+
 def annotate_variants_with_genes(variants_df: pd.DataFrame, gene_db: dict, include_intergenic: bool = True) -> pd.DataFrame:
+    """Annotates variants with nearest genes from the gene database."""
+    if not gene_db:
+        print("⚠️ No gene database provided — skipping gene annotation.")
+        return variants_df
+
     def find_nearest_gene(chrom, pos):
         closest_gene = None
         min_distance = float('inf')
@@ -43,13 +50,19 @@ def annotate_variants_with_genes(variants_df: pd.DataFrame, gene_db: dict, inclu
         return closest_gene if include_intergenic else None
 
     variants_df["Gene"] = variants_df.apply(
-        lambda row: row["Gene"] if pd.notnull(row["Gene"]) else find_nearest_gene(row["CHROM"], row["POS"]),
+        lambda row: row["Gene"] if pd.notnull(row.get("Gene")) else find_nearest_gene(row["CHROM"], row["POS"]),
         axis=1
     )
     print("✅ Annotation with nearest genes completed")
     return variants_df
 
+
 def annotate_with_traits(variants_df: pd.DataFrame, traits_df: pd.DataFrame, keep_unmatched: bool = True) -> pd.DataFrame:
+    """Merges trait data with annotated variants on the 'Gene' column."""
+    if traits_df is None or traits_df.empty:
+        print("⚠️ No traits data provided — skipping trait annotation.")
+        return variants_df
+
     result = variants_df.merge(
         traits_df,
         how='left' if keep_unmatched else 'inner',
