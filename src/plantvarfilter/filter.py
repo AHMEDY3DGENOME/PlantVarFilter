@@ -50,12 +50,16 @@ def improved_filter_variants(
 ) -> Union[pd.DataFrame, str]:
     tmp_dir = tempfile.gettempdir()
     feather_path = os.path.join(tmp_dir, "filtered_variants.feather")
+
     variants = []
     csq_header = None
     count = 0
-    written = False
     skipped_intergenic = 0
     skipped_no_consequence = 0
+    added_unknown = 0
+
+    def vcf_only_mode_active() -> bool:
+        return (csq_header is None) or not consequence_types
 
     def read_lines():
         if hasattr(vcf_stream, 'read'):
@@ -82,7 +86,24 @@ def improved_filter_variants(
             chrom, pos, vid, ref, alt, _, _, info_str = fields[:8]
             info_dict = parse_info_field(info_str)
             csq_entries = parse_csq_field(info_dict, csq_header)
-            variant_type = classify_variant_type(ref, alt)
+
+            if not csq_entries:
+                if vcf_only_mode_active():
+                    variants.append({
+                        "CHROM": chrom,
+                        "POS": int(pos),
+                        "ID": vid,
+                        "REF": ref,
+                        "ALT": alt,
+                        "Variant_Type": classify_variant_type(ref, alt),
+                        "Consequence": "unknown",
+                        "Gene": ""
+                    })
+                    added_unknown += 1
+                    count += 1
+                else:
+                    skipped_no_consequence += 1
+                continue
 
             for csq in csq_entries:
                 csq_data = dict(zip(csq_header[:len(csq)], csq)) if csq_header else {}
@@ -90,11 +111,28 @@ def improved_filter_variants(
                 gene = csq_data.get("Feature", "") or (csq[3] if len(csq) > 3 else "")
 
                 if not consequence.strip():
-                    skipped_no_consequence += 1
-                    continue
+                    if vcf_only_mode_active():
+                        variants.append({
+                            "CHROM": chrom,
+                            "POS": int(pos),
+                            "ID": vid,
+                            "REF": ref,
+                            "ALT": alt,
+                            "Variant_Type": classify_variant_type(ref, alt),
+                            "Consequence": "unknown",
+                            "Gene": gene
+                        })
+                        added_unknown += 1
+                        count += 1
+                        continue
+                    else:
+                        skipped_no_consequence += 1
+                        continue
+
                 if "intergenic_variant" in consequence and not include_intergenic:
                     skipped_intergenic += 1
                     continue
+
                 if consequence_types and all(ct not in consequence for ct in consequence_types):
                     continue
 
@@ -104,23 +142,24 @@ def improved_filter_variants(
                     "ID": vid,
                     "REF": ref,
                     "ALT": alt,
-                    "Variant_Type": variant_type,
+                    "Variant_Type": classify_variant_type(ref, alt),
                     "Consequence": consequence,
                     "Gene": gene
                 })
-
                 count += 1
-                if count % CHUNK_SIZE == 0:
-                    chunk_df = pd.DataFrame(variants)
-                    feather.write_feather(chunk_df, feather_path) if not written else feather.write_feather(chunk_df, feather_path, compression='uncompressed')
-                    written = True
-                    variants = []
 
-    if variants:
-        chunk_df = pd.DataFrame(variants)
-        feather.write_feather(chunk_df, feather_path) if not written else feather.write_feather(chunk_df, feather_path, compression='uncompressed')
+    cols = ["CHROM", "POS", "ID", "REF", "ALT", "Variant_Type", "Consequence", "Gene"]
+    if not variants:
+        df = pd.DataFrame(columns=cols)
+    else:
+        df = pd.DataFrame(variants, columns=cols)
 
-    logging.info(f"\U0001F4CC Skipped variants with no consequence: {skipped_no_consequence}")
-    logging.info(f"\U0001F4CC Skipped intergenic variants (excluded): {skipped_intergenic}")
+    os.makedirs(os.path.dirname(feather_path), exist_ok=True)
+    feather.write_feather(df.reset_index(drop=True), feather_path)
+
+    logging.info(f"Skipped variants with no consequence: {skipped_no_consequence}")
+    logging.info(f"Skipped intergenic variants (excluded): {skipped_intergenic}")
+    logging.info(f"Added variants with unknown consequence (VCF-only mode): {added_unknown}")
 
     return feather_path
+
