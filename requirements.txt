@@ -5,3 +5,4 @@ numpy
 geneview
 matplotlib
 fastlmm
+xgboost
