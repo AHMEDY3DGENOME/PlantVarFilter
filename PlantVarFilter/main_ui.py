@@ -1,8 +1,10 @@
-# main_gui.py — PlantVarFilter (plant-themed UI + docking + improved dialogs + header icon)
+# main_gui.py — PlantVarFilter (plant-themed UI + docking + improved dialogs + header icon + VCF QC tab + QC plots + file labels)
 
 import os
 import dearpygui.dearpygui as dpg
 from dearpygui_ext import logger
+
+from vcf_quality import VCFQualityChecker
 
 from PlantVarFilter.gwas_pipeline import GWAS
 from PlantVarFilter.genomic_prediction_pipeline import GenomicPrediction
@@ -28,13 +30,15 @@ class GWASApp:
         self.genomic_predict_class = GenomicPrediction()
         self.plot_class = Plot()
 
-        # ---------- Fonts ----------
+        self.vcf_qc_checker = VCFQualityChecker(max_sites_scan=200_000, min_sites_required=200)
+        self.blacklist_app_data = None
+
         with dpg.font_registry():
             script_dir = os.path.dirname(__file__)
             font_path = os.path.join(script_dir, "test.ttf")
             self.font = dpg.add_font(font_path, 40, tag="ttf-font") if os.path.exists(font_path) else None
 
-        # ---------- Base window themes (Dark/Light plant palette) ----------
+        # ——— App themes ———
         with dpg.theme() as self.theme_plant_dark:
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (18, 24, 20))
@@ -81,7 +85,6 @@ class GWASApp:
                 dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 8)
                 dpg.add_theme_style(dpg.mvStyleVar_TabRounding, 8)
 
-        # ---------- Component themes ----------
         with dpg.theme() as self.theme_primary_btn_dark:
             with dpg.theme_component(dpg.mvButton):
                 dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 179, 113))
@@ -145,7 +148,6 @@ class GWASApp:
                 dpg.add_theme_color(dpg.mvThemeCol_FrameBg, light_bg)
                 dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
 
-        # ---------- File Dialog themes ----------
         with dpg.theme() as self.theme_fd_dark:
             with dpg.theme_component(dpg.mvFileDialog):
                 dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (22, 28, 24))
@@ -180,20 +182,17 @@ class GWASApp:
                 dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 10)
                 dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
 
-        # ---------- Track items to re-bind themes on toggle ----------
         self._primary_buttons = []
         self._secondary_buttons = []
         self._inputs = []
         self._file_dialogs = []
         self.night_mode = True
 
-        # Header tags to update on theme toggle
         self.header_group = None
         self.brand_title = None
         self.brand_tagline = None
         self.logo_draw = None
 
-        # ---------- State ----------
         self.vcf_app_data = None
         self.variants_app_data = None
         self.results_directory = None
@@ -202,7 +201,6 @@ class GWASApp:
         self.cov_app_data = None
         self.default_path = os.path.expanduser("~")
 
-        # Filenames
         self.gwas_result_name = "gwas_results.csv"
         self.gwas_result_name_top = "gwas_results_top10000.csv"
         self.genomic_predict_name = "genomic_prediction_results.csv"
@@ -217,17 +215,16 @@ class GWASApp:
 
         self.setup_gui()
 
-    # ---------- UI ----------
+    # ——— UI ———
     def setup_gui(self):
         dpg.create_viewport(title='PlantVarFilter', width=2000, height=1200, resizable=True)
 
-        # Root dockspace
         with dpg.window(tag="PrimaryWindow", no_close=True, no_move=True, no_resize=True,
                         no_title_bar=True, no_background=True):
             pass
         dpg.set_primary_window("PrimaryWindow", True)
 
-        # File dialogs (modal + larger)
+        # File dialogs
         with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_vcf,
                              file_count=3, tag="file_dialog_vcf", width=920, height=560,
                              default_path=self.default_path, modal=True):
@@ -262,14 +259,20 @@ class GWASApp:
             dpg.add_file_extension(".*")
         self._file_dialogs.append("file_dialog_bed")
 
+        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_blacklist,
+                             file_count=1, tag="file_dialog_blacklist", width=920, height=560,
+                             default_path=self.default_path, modal=True):
+            dpg.add_file_extension(".bed", color=(255, 200, 150, 255))
+            dpg.add_file_extension(".*")
+        self._file_dialogs.append("file_dialog_blacklist")
+
         dpg.add_file_dialog(directory_selector=True, show=False, callback=self.callback_save_results,
                             tag="select_directory", cancel_callback=self.cancel_callback_directory,
                             width=900, height=540, default_path=self.default_path, modal=True)
         self._file_dialogs.append("select_directory")
 
-        # Main window (dockable)
+        # Main window
         with dpg.window(label="PlantVarFilter", tag="MainWindow", no_close=True, width=1100, height=700):
-            # Header (icon + title + tagline)
             self.build_header(parent="MainWindow")
 
             dpg.add_spacer(height=4)
@@ -278,79 +281,41 @@ class GWASApp:
 
             dpg.add_tab_bar(tag="main_tabbar")
 
-            # -------- GWAS --------
-            with dpg.tab(label='GWAS Analysis', parent="main_tabbar"):
-                dpg.add_text("\nStart GWAS Analysis", indent=10)
+            # —— Check VCF File (QC) ——
+            with dpg.tab(label='Check VCF File', parent="main_tabbar"):
+                dpg.add_text("\nCheck VCF quality before conversion/analysis", indent=10)
                 dpg.add_spacer(height=10)
                 with dpg.group(horizontal=True, horizontal_spacing=60):
                     with dpg.group():
-                        geno = dpg.add_button(label="Choose a BED file",
-                                              callback=lambda: dpg.show_item("file_dialog_bed"),
-                                              width=220, tag='tooltip_bed')
-                        self._secondary_buttons.append(geno)
+                        vcf_btn_qc = dpg.add_button(
+                            label="Choose a VCF file",
+                            callback=lambda: dpg.show_item("file_dialog_vcf"),
+                            width=220, tag='tooltip_vcf_qc'
+                        )
+                        self._secondary_buttons.append(vcf_btn_qc)
+                        dpg.add_text("", tag="qc_vcf_path_lbl", wrap=500)
 
                         dpg.add_spacer(height=6)
-                        pheno = dpg.add_button(label="Choose a phenotype file",
-                                               callback=lambda: dpg.show_item("file_dialog_pheno"),
-                                               width=220, tag='tooltip_pheno')
-                        self._secondary_buttons.append(pheno)
-
-                        dpg.add_spacer(height=6)
-                        cov_file = dpg.add_button(label="Choose covariate file (option)",
-                                                  callback=lambda: dpg.show_item("file_dialog_cov"),
-                                                  width=220, tag='tooltip_cov')
-                        self._secondary_buttons.append(cov_file)
+                        bl_btn = dpg.add_button(
+                            label="Choose blacklist BED (optional)",
+                            callback=lambda: dpg.show_item("file_dialog_blacklist"),
+                            width=220, tag='tooltip_bl_qc'
+                        )
+                        self._secondary_buttons.append(bl_btn)
+                        dpg.add_text("", tag="qc_bl_path_lbl", wrap=500)
 
                     with dpg.group():
-                        self.gwas_combo = dpg.add_combo(
-                            label="Analysis Algorithms",
-                            items=["FaST-LMM", "Linear regression", "Ridge Regression",
-                                   "Random Forest (AI)", "XGBoost (AI)"],
-                            width=240, default_value="FaST-LMM", tag='tooltip_algorithm'
+                        self.deep_scan = dpg.add_checkbox(label="Deep scan", default_value=False)
+                        self._inputs.append(self.deep_scan)
+                        dpg.add_spacer(height=12)
+                        run_qc_btn = dpg.add_button(
+                            label="Run Quality Check",
+                            callback=self.run_vcf_qc,
+                            width=200, height=36
                         )
-                        self._inputs.append(self.gwas_combo)
+                        self._primary_buttons.append(run_qc_btn)
 
-                        dpg.add_spacer(height=14)
-                        gwas_btn = dpg.add_button(
-                            label="Run GWAS", callback=self.run_gwas,
-                            user_data=[geno, pheno], width=180, height=36
-                        )
-                        self._primary_buttons.append(gwas_btn)
-
-            # -------- Genomic Prediction --------
-            with dpg.tab(label='Genomic Prediction', parent="main_tabbar"):
-                dpg.add_text("\nStart Genomic Prediction", indent=10)
-                dpg.add_spacer(height=10)
-                with dpg.group(horizontal=True, horizontal_spacing=60):
-                    with dpg.group():
-                        geno = dpg.add_button(label="Choose a BED file",
-                                              callback=lambda: dpg.show_item("file_dialog_bed"),
-                                              width=220, tag='tooltip_bed_gp')
-                        self._secondary_buttons.append(geno)
-
-                        dpg.add_spacer(height=6)
-                        pheno = dpg.add_button(label="Choose a phenotype file",
-                                               callback=lambda: dpg.show_item("file_dialog_pheno"),
-                                               width=220, tag='tooltip_pheno_gp')
-                        self._secondary_buttons.append(pheno)
-
-                    with dpg.group():
-                        self.gwas_gp = dpg.add_combo(
-                            label="Analysis Algorithms",
-                            items=["XGBoost (AI)", "Random Forest (AI)",
-                                   "Ridge Regression", "GP_LMM", "val"],
-                            width=240, default_value="XGBoost (AI)", tag='tooltip_algorithm_gp'
-                        )
-                        self._inputs.append(self.gwas_gp)
-
-                        dpg.add_spacer(height=14)
-                        gp_btn = dpg.add_button(
-                            label="Run Genomic Prediction", callback=self.run_genomic_prediction,
-                            user_data=[geno, pheno], width=220, height=36
-                        )
-                        self._primary_buttons.append(gp_btn)
-
-            # -------- Convert to PLINK --------
+            # —— Convert to PLINK ——
             with dpg.tab(label='Convert to PLINK', parent="main_tabbar"):
                 dpg.add_text("\nConvert a VCF file into PLINK BED and apply MAF/missing genotype filters.",
                              indent=10)
@@ -364,6 +329,7 @@ class GWASApp:
                             width=220, tag='tooltip_vcf'
                         )
                         self._secondary_buttons.append(vcf)
+                        dpg.add_text("", tag="conv_vcf_path_lbl", wrap=500)
 
                         dpg.add_spacer(height=6)
                         variant_ids = dpg.add_button(
@@ -372,6 +338,7 @@ class GWASApp:
                             width=220, tag='tooltip_variant'
                         )
                         self._secondary_buttons.append(variant_ids)
+                        dpg.add_text("", tag="ids_path_lbl", wrap=500)
 
                     with dpg.group():
                         dpg.add_text("Apply filters:", indent=0)
@@ -397,7 +364,84 @@ class GWASApp:
                         )
                         self._primary_buttons.append(convert_btn)
 
-            # -------- Settings --------
+            # —— GWAS Analysis ——
+            with dpg.tab(label='GWAS Analysis', parent="main_tabbar"):
+                dpg.add_text("\nStart GWAS Analysis", indent=10)
+                dpg.add_spacer(height=10)
+                with dpg.group(horizontal=True, horizontal_spacing=60):
+                    with dpg.group():
+                        geno = dpg.add_button(label="Choose a BED file",
+                                              callback=lambda: dpg.show_item("file_dialog_bed"),
+                                              width=220, tag='tooltip_bed')
+                        self._secondary_buttons.append(geno)
+                        dpg.add_text("", tag="gwas_bed_path_lbl", wrap=500)
+
+                        dpg.add_spacer(height=6)
+                        pheno = dpg.add_button(label="Choose a phenotype file",
+                                               callback=lambda: dpg.show_item("file_dialog_pheno"),
+                                               width=220, tag='tooltip_pheno')
+                        self._secondary_buttons.append(pheno)
+                        dpg.add_text("", tag="gwas_pheno_path_lbl", wrap=500)
+
+                        dpg.add_spacer(height=6)
+                        cov_file = dpg.add_button(label="Choose covariate file (option)",
+                                                  callback=lambda: dpg.show_item("file_dialog_cov"),
+                                                  width=220, tag='tooltip_cov')
+                        self._secondary_buttons.append(cov_file)
+                        dpg.add_text("", tag="gwas_cov_path_lbl", wrap=500)
+
+                    with dpg.group():
+                        self.gwas_combo = dpg.add_combo(
+                            label="Analysis Algorithms",
+                            items=["FaST-LMM", "Linear regression", "Ridge Regression",
+                                   "Random Forest (AI)", "XGBoost (AI)"],
+                            width=240, default_value="FaST-LMM", tag='tooltip_algorithm'
+                        )
+                        self._inputs.append(self.gwas_combo)
+
+                        dpg.add_spacer(height=14)
+                        gwas_btn = dpg.add_button(
+                            label="Run GWAS", callback=self.run_gwas,
+                            user_data=[geno, pheno], width=180, height=36
+                        )
+                        self._primary_buttons.append(gwas_btn)
+
+            # —— Genomic Prediction ——
+            with dpg.tab(label='Genomic Prediction', parent="main_tabbar"):
+                dpg.add_text("\nStart Genomic Prediction", indent=10)
+                dpg.add_spacer(height=10)
+                with dpg.group(horizontal=True, horizontal_spacing=60):
+                    with dpg.group():
+                        geno = dpg.add_button(label="Choose a BED file",
+                                              callback=lambda: dpg.show_item("file_dialog_bed"),
+                                              width=220, tag='tooltip_bed_gp')
+                        self._secondary_buttons.append(geno)
+                        dpg.add_text("", tag="gp_bed_path_lbl", wrap=500)
+
+                        dpg.add_spacer(height=6)
+                        pheno = dpg.add_button(label="Choose a phenotype file",
+                                               callback=lambda: dpg.show_item("file_dialog_pheno"),
+                                               width=220, tag='tooltip_pheno_gp')
+                        self._secondary_buttons.append(pheno)
+                        dpg.add_text("", tag="gp_pheno_path_lbl", wrap=500)
+
+                    with dpg.group():
+                        self.gwas_gp = dpg.add_combo(
+                            label="Analysis Algorithms",
+                            items=["XGBoost (AI)", "Random Forest (AI)",
+                                   "Ridge Regression", "GP_LMM", "val"],
+                            width=240, default_value="XGBoost (AI)", tag='tooltip_algorithm_gp'
+                        )
+                        self._inputs.append(self.gwas_gp)
+
+                        dpg.add_spacer(height=14)
+                        gp_btn = dpg.add_button(
+                            label="Run Genomic Prediction", callback=self.run_genomic_prediction,
+                            user_data=[geno, pheno], width=220, height=36
+                        )
+                        self._primary_buttons.append(gp_btn)
+
+            # —— Settings ——
             with dpg.tab(label='Settings', parent="main_tabbar"):
                 dpg.add_spacer(height=10)
                 with dpg.table(header_row=False, borders_innerH=False, borders_outerH=False,
@@ -462,11 +506,9 @@ class GWASApp:
                             )
                             self._inputs.append(self.aggregation_method)
 
-        # Log (dockable)
         self.log_win = dpg.add_window(label="Log", tag="LogWindow", width=800, height=400)
         self.logz = logger.mvLogger(self.log_win)
 
-        # Results (dockable, initially hidden)
         dpg.add_window(label="Results", tag="ResultsWindow", width=1000, height=600, show=False)
 
         # Tooltips
@@ -504,23 +546,32 @@ class GWASApp:
             dpg.add_text("Limit SNPs in plots on huge datasets. Empty = all.", color=[79, 128, 90])
         with dpg.tooltip("tooltip_stats"):
             dpg.add_text("Enable advanced PDF plots for pheno/geno stats.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_aggr"):
-            dpg.add_text("Aggregate SNP effects: sum / median / mean.", color=[79, 128, 90])
 
-        # Initial theme + per-item bindings
+        with dpg.tooltip("tooltip_vcf_qc"):
+            dpg.add_text("Select a VCF/VCF.GZ file to evaluate.", color=[79, 128, 90])
+        with dpg.tooltip("tooltip_bl_qc"):
+            dpg.add_text("Optional BED of low-mappability/blacklist regions.", color=[79, 128, 90])
+
         self.apply_component_themes()
 
-    # ---------- Header (icon + texts) ----------
+    # ——— Header ———
     def build_header(self, parent):
         if self.header_group and dpg.does_item_exist(self.header_group):
             dpg.delete_item(self.header_group)
 
         with dpg.group(horizontal=True, parent=parent) as self.header_group:
-            self.logo_draw = dpg.add_drawlist(width=48, height=48)
+            logo_path = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
+            if os.path.exists(logo_path):
+                w, h, c, data = dpg.load_image(logo_path)
+                if not dpg.does_item_exist("plant_logo_tex"):
+                    with dpg.texture_registry(show=False):
+                        dpg.add_static_texture(width=w, height=h, default_value=data, tag="plant_logo_tex")
+                dpg.add_image("plant_logo_tex", width=48, height=48)
+            else:
+                self.logo_draw = dpg.add_drawlist(width=48, height=48)
+
             self.brand_title = dpg.add_text("PlantVarFilter")
             self.brand_tagline = dpg.add_text("Software for GWAS Analysis")
-
-        self.redraw_header_icon_and_colors()
 
     def header_palette(self):
         if self.night_mode:
@@ -543,25 +594,16 @@ class GWASApp:
     def redraw_header_icon_and_colors(self):
         pal = self.header_palette()
 
-        # clear and draw simple leaf icon
         if self.logo_draw and dpg.does_item_exist(self.logo_draw):
             dpg.delete_item(self.logo_draw, children_only=True)
-            # outer soft ring
             dpg.draw_circle(center=(24, 24), radius=22, color=pal["ring"], fill=(0, 0, 0, 0), parent=self.logo_draw, thickness=2)
-            # leaf polygon
-            leaf_points = [(24, 10), (38, 22), (22, 38), (14, 26)]
-            dpg.draw_polygon(points=leaf_points, color=(0, 0, 0, 0), fill=pal["leaf"], parent=self.logo_draw)
-            # vein
-            dpg.draw_line(p1=(24, 12), p2=(24, 34), color=pal["vein"], thickness=2, parent=self.logo_draw)
-            dpg.draw_line(p1=(24, 22), p2=(34, 22), color=pal["vein"], thickness=2, parent=self.logo_draw)
 
-        # text colors
         if self.brand_title and dpg.does_item_exist(self.brand_title):
             dpg.configure_item(self.brand_title, color=pal["title"])
         if self.brand_tagline and dpg.does_item_exist(self.brand_tagline):
             dpg.configure_item(self.brand_tagline, color=pal["tagline"])
 
-    # ---------- Theme binding helpers ----------
+    # ——— Helpers ———
     def apply_component_themes(self):
         dpg.bind_theme(self.theme_plant_dark if self.night_mode else self.theme_plant_light)
 
@@ -583,19 +625,31 @@ class GWASApp:
             if dpg.does_item_exist(t):
                 dpg.bind_item_theme(t, fd_theme)
 
-        # update header colors
         self.redraw_header_icon_and_colors()
 
         if self.font:
             dpg.bind_font(self.font)
         dpg.set_global_font_scale(0.62)
 
-    # ---------- Callbacks (files) ----------
+    def _set_text(self, tag: str, value: str):
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, value)
+
+    def _fmt_name(self, path: str) -> str:
+        try:
+            return os.path.basename(path) or path
+        except Exception:
+            return str(path)
+
+    # ——— Callbacks (files) ———
     def callback_vcf(self, s, app_data):
         self.vcf_app_data = app_data
         vcf_path, current_path = self.get_selection_path(self.vcf_app_data)
         dpg.configure_item("file_dialog_variants", default_path=current_path)
         self.add_log('VCF Selected: ' + vcf_path)
+        name = self._fmt_name(vcf_path)
+        self._set_text("qc_vcf_path_lbl", name)
+        self._set_text("conv_vcf_path_lbl", name)
 
     def callback_bed(self, s, app_data):
         self.bed_app_data = app_data
@@ -604,6 +658,9 @@ class GWASApp:
             dpg.configure_item("file_dialog_cov", default_path=current_path)
             dpg.configure_item("file_dialog_pheno", default_path=current_path)
             self.add_log('BED file Selected: ' + bed_path)
+            name = self._fmt_name(bed_path)
+            self._set_text("gwas_bed_path_lbl", name)
+            self._set_text("gp_bed_path_lbl", name)
         except TypeError:
             self.add_log('Invalid BED file Selected', error=True)
 
@@ -612,6 +669,7 @@ class GWASApp:
         variants_path, current_path = self.get_selection_path(self.variants_app_data)
         dpg.configure_item("file_dialog_vcf", default_path=current_path)
         self.add_log('IDs file Selected: ' + variants_path)
+        self._set_text("ids_path_lbl", self._fmt_name(variants_path))
 
     def callback_pheno(self, s, app_data):
         self.pheno_app_data = app_data
@@ -620,6 +678,9 @@ class GWASApp:
             dpg.configure_item("file_dialog_cov", default_path=current_path)
             dpg.configure_item("file_dialog_bed", default_path=current_path)
             self.add_log('Pheno File Selected: ' + pheno_path)
+            name = self._fmt_name(pheno_path)
+            self._set_text("gwas_pheno_path_lbl", name)
+            self._set_text("gp_pheno_path_lbl", name)
         except TypeError:
             self.add_log('Wrong Pheno File Selected', error=True)
 
@@ -630,8 +691,18 @@ class GWASApp:
             dpg.configure_item("file_dialog_bed", default_path=current_path)
             dpg.configure_item("file_dialog_pheno", default_path=current_path)
             self.add_log('Covariates File Selected: ' + cov_path)
+            self._set_text("gwas_cov_path_lbl", self._fmt_name(cov_path))
         except TypeError:
             self.add_log('Wrong Covariates File Selected', error=True)
+
+    def callback_blacklist(self, s, app_data):
+        self.blacklist_app_data = app_data
+        try:
+            bl_path, _ = self.get_selection_path(self.blacklist_app_data)
+            self.add_log('Blacklist BED Selected: ' + bl_path)
+            self._set_text("qc_bl_path_lbl", self._fmt_name(bl_path))
+        except TypeError:
+            self.add_log('Invalid blacklist file', error=True)
 
     def get_selection_path(self, app_data):
         current_path = app_data['current_path'] + '/'
@@ -658,7 +729,120 @@ class GWASApp:
     def cancel_callback_directory(self, s, app_data):
         self.add_log('Process Canceled')
 
-    # ---------- Actions ----------
+    # ——— QC plotting helpers ———
+    def _add_hist_plot(self, parent, title, values, bins=30, x_range=None,
+                       p10=None, p50=None, p90=None):
+        if not values:
+            with dpg.tab(label=title, parent=parent):
+                dpg.add_text("No data")
+            return
+
+        mn = min(values); mx = max(values)
+        if x_range:
+            mn, mx = x_range
+        if mx <= mn:
+            mx = mn + 1e-6
+
+        width = (mx - mn) / bins
+        counts = [0] * bins
+        for v in values:
+            if v < mn or v > mx:
+                continue
+            idx = min(bins - 1, int((v - mn) / (mx - mn) * bins))
+            counts[idx] += 1
+        centers = [mn + (i + 0.5) * width for i in range(bins)]
+
+        with dpg.tab(label=title, parent=parent):
+            with dpg.plot(label=title, height=380, width=720, anti_aliased=True):
+                x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="Value")
+                y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="Count")
+                dpg.add_bar_series(centers, counts, parent=y_axis, label="Histogram")
+
+                for val, lab in [(p10, "P10"), (p50, "P50"), (p90, "P90")]:
+                    if val is not None:
+                        try:
+                            dpg.add_vline_series([float(val)], parent=y_axis, label=lab)
+                        except Exception:
+                            pass
+
+    # ——— Actions ———
+    def run_vcf_qc(self, s, data):
+        try:
+            vcf_path = self.get_selection_path(self.vcf_app_data)[0]
+        except Exception:
+            self.add_log('Please select a VCF file first.', error=True)
+            return
+
+        try:
+            _ = self.get_selection_path(self.blacklist_app_data)[0]
+        except Exception:
+            pass
+
+        deep = bool(dpg.get_value(self.deep_scan))
+        self.add_log('Running VCF Quality Check...')
+
+        report = self.vcf_qc_checker.evaluate(vcf_path, log_fn=self.add_log)
+
+        dpg.configure_item("ResultsWindow", show=True)
+        dpg.delete_item("ResultsWindow", children_only=True)
+
+        dpg.add_text(f"VCF-QAScore: {report.score:.1f}   |   Verdict: {report.verdict}", parent="ResultsWindow")
+        if report.hard_fail_reasons:
+            dpg.add_spacer(height=4, parent="ResultsWindow")
+            dpg.add_text("Hard fail reasons:", parent="ResultsWindow")
+            for r in report.hard_fail_reasons:
+                dpg.add_text(f"- {r}", parent="ResultsWindow")
+            return
+
+        dpg.add_spacer(height=10, parent="ResultsWindow")
+        dpg.add_text("Recommendations:", parent="ResultsWindow")
+        if report.recommendations:
+            for r in report.recommendations:
+                dpg.add_text(f"- {r}", parent="ResultsWindow")
+        else:
+            dpg.add_text("- No specific recommendations.", parent="ResultsWindow")
+
+        dpg.add_spacer(height=10, parent="ResultsWindow")
+        dpg.add_text("Metrics:", parent="ResultsWindow")
+        with dpg.table(row_background=True, borders_innerH=True, borders_outerH=True,
+                       borders_innerV=True, borders_outerV=True, parent="ResultsWindow"):
+            dpg.add_table_column(label="Metric")
+            dpg.add_table_column(label="Value")
+            for k, v in sorted(report.metrics.items()):
+                with dpg.table_row():
+                    dpg.add_text(str(k))
+                    dpg.add_text(f"{v:.6g}" if isinstance(v, (int, float)) else str(v))
+
+        dpg.add_spacer(height=10, parent="ResultsWindow")
+        dpg.add_text("QC Plots:", parent="ResultsWindow")
+
+        with dpg.tab_bar(parent="ResultsWindow") as qc_tabbar:
+            d = report.dists or {}
+            self._add_hist_plot(
+                qc_tabbar, "Depth (DP)",
+                d.get("dp", []), bins=30,
+                p10=report.metrics.get("dp_p10"),
+                p50=report.metrics.get("dp_median"),
+                p90=report.metrics.get("dp_p90"),
+            )
+            self._add_hist_plot(
+                qc_tabbar, "Genotype Quality (GQ)",
+                d.get("gq", []), bins=30,
+                p10=report.metrics.get("gq_p10"),
+                p50=report.metrics.get("gq_median"),
+                p90=report.metrics.get("gq_p90"),
+            )
+            self._add_hist_plot(
+                qc_tabbar, "Allele Balance |AB - 0.5| (hets)",
+                d.get("ab_dev", []), bins=30, x_range=(0.0, 1.0),
+                p90=report.metrics.get("ab_dev_p90"),
+            )
+            self._add_hist_plot(
+                qc_tabbar, "Site Missingness",
+                d.get("site_missing", []), bins=30, x_range=(0.0, 1.0),
+                p90=report.metrics.get("site_missing_p90"),
+            )
+
     def convert_vcf(self, s, data, user_data):
         maf = str(dpg.get_value(user_data[0]))
         geno = str(dpg.get_value(user_data[1]))
@@ -835,7 +1019,7 @@ class GWASApp:
         except TypeError:
             self.add_log('Please select a phenotype and genotype file.', error=True)
 
-    # ---------- Results window ----------
+    # ——— Results window ———
     def show_results_window(self, df, algorithm, genomic_predict):
         dpg.configure_item("ResultsWindow", show=True)
         dpg.delete_item("ResultsWindow", children_only=True)
@@ -909,13 +1093,13 @@ class GWASApp:
                                 for j in range(df.shape[1]):
                                     dpg.add_text(df.iloc[i, j])
 
-    # ---------- Theme toggle ----------
+    # ——— Theme toggle ———
     def toggle_theme(self, sender, app_data):
         self.night_mode = bool(app_data)
         self.apply_component_themes()
         self.add_log("Dark mode enabled" if self.night_mode else "Light mode enabled")
 
-    # ---------- Utils ----------
+    # ——— Utils ———
     def delete_files(self):
         for tag in ["manhatten_image", "manhatten_tag", "qq_image", "qq_tag",
                     "table_gwas", "table_gp", "ba_tag", "ba_tag2", "ba_image", "ba_image2"]:
@@ -945,7 +1129,7 @@ class GWASApp:
         else:
             self.logz.log_info(message)
 
-    # ---------- Runner ----------
+    # ——— Runner ———
     def run(self):
         self.apply_component_themes()
         dpg.setup_dearpygui()
