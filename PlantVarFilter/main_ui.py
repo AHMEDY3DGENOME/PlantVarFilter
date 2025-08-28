@@ -1,6 +1,10 @@
-# main_gui.py — PlantVarFilter (plant-themed UI + docking + improved dialogs + header icon + VCF QC tab + QC plots + file labels)
+# main_gui.py — PlantVarFilter
+# (plant-themed UI + docking + improved dialogs + header icon + VCF QC tab + QC plots
+#  + file labels + samtools preprocess + bcftools preprocess + variant calling BAM→VCF)
 
 import os
+import shutil
+import subprocess
 import dearpygui.dearpygui as dpg
 from dearpygui_ext import logger
 
@@ -13,6 +17,22 @@ from PlantVarFilter.pipeline_plots import Plot
 
 from pysnptools.snpreader import Bed, Pheno
 import pysnptools.util as pstutil
+
+from bcftools_utils import BCFtools, BCFtoolsError
+from samtools_utils import Samtools, SamtoolsError
+
+# —— variant calling helper (new) ——
+try:
+    from variant_caller_utils import VariantCaller, VariantCallerError
+except Exception:  # graceful fallback if file missing
+    VariantCaller = None
+
+# Prefer bundled binaries under PlantVarFilter/linux, else PATH
+try:
+    from PlantVarFilter.linux import resolve_tool
+except Exception:
+    def resolve_tool(name: str) -> str:
+        return shutil.which(name) or name
 
 
 def main():
@@ -33,12 +53,36 @@ class GWASApp:
         self.vcf_qc_checker = VCFQualityChecker(max_sites_scan=200_000, min_sites_required=200)
         self.blacklist_app_data = None
 
+        # bcftools helpers
+        self.bcft = BCFtools(
+            bcftools_bin=resolve_tool("bcftools"),
+            bgzip_bin=resolve_tool("bgzip"),
+            tabix_bin=resolve_tool("tabix")
+        )
+        self.fasta_app_data = None
+        self.bcf_out_last = None
+
+        # samtools helper
+        self.sam = Samtools(exe=resolve_tool("samtools"))
+        self.bam_app_data = None
+        self.sam_out_last = None
+
+        # variant caller (bcftools mpileup+call)
+        self.vcaller = VariantCaller(
+            bcftools_bin=resolve_tool("bcftools"),
+            bgzip_bin=resolve_tool("bgzip"),
+            tabix_bin=resolve_tool("tabix")
+        ) if VariantCaller else None
+        self.bam_vc_app_data = None        # single BAM for calling
+        self.bamlist_app_data = None       # .list of BAMs for calling
+        self.vc_out_last = None            # produced VCF
+
         with dpg.font_registry():
             script_dir = os.path.dirname(__file__)
             font_path = os.path.join(script_dir, "test.ttf")
             self.font = dpg.add_font(font_path, 40, tag="ttf-font") if os.path.exists(font_path) else None
 
-        # ——— App themes ———
+        # ——— Themes ———
         with dpg.theme() as self.theme_plant_dark:
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (18, 24, 20))
@@ -214,6 +258,7 @@ class GWASApp:
         self.snp_limit = None
 
         self.setup_gui()
+        self._check_cli_versions()
 
     # ——— UI ———
     def setup_gui(self):
@@ -266,6 +311,37 @@ class GWASApp:
             dpg.add_file_extension(".*")
         self._file_dialogs.append("file_dialog_blacklist")
 
+        # FASTA for bcftools/variant calling
+        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_fasta,
+                             file_count=1, tag="file_dialog_fasta", width=920, height=560,
+                             default_path=self.default_path, modal=True):
+            dpg.add_file_extension("Reference (*.fa *.fasta *.fa.gz){.fa,.fasta,.fa.gz}", color=(150, 200, 255, 255))
+        self._file_dialogs.append("file_dialog_fasta")
+
+        # BAM for preprocess
+        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_bam,
+                             file_count=1, tag="file_dialog_bam", width=920, height=560,
+                             default_path=self.default_path, modal=True):
+            dpg.add_file_extension(".bam", color=(255, 180, 120, 255))
+            dpg.add_file_extension(".*")
+        self._file_dialogs.append("file_dialog_bam")
+
+        # BAM (single) for variant calling
+        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_bam_vc,
+                             file_count=1, tag="file_dialog_bam_vc", width=920, height=560,
+                             default_path=self.default_path, modal=True):
+            dpg.add_file_extension(".bam", color=(255, 180, 120, 255))
+            dpg.add_file_extension(".*")
+        self._file_dialogs.append("file_dialog_bam_vc")
+
+        # BAM list for variant calling
+        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_bamlist_vc,
+                             file_count=1, tag="file_dialog_bamlist", width=920, height=560,
+                             default_path=self.default_path, modal=True):
+            dpg.add_file_extension("BAM list (*.list){.list}", color=(255, 230, 140, 255))
+            dpg.add_file_extension(".*")
+        self._file_dialogs.append("file_dialog_bamlist")
+
         dpg.add_file_dialog(directory_selector=True, show=False, callback=self.callback_save_results,
                             tag="select_directory", cancel_callback=self.cancel_callback_directory,
                             width=900, height=540, default_path=self.default_path, modal=True)
@@ -280,6 +356,191 @@ class GWASApp:
             dpg.add_spacer(height=6)
 
             dpg.add_tab_bar(tag="main_tabbar")
+
+            # —— Preprocess (samtools) ——
+            with dpg.tab(label='Preprocess (samtools)', parent="main_tabbar"):
+                dpg.add_text("\nClean BAM: sort / fixmate / markdup / index + QC reports", indent=10)
+                dpg.add_spacer(height=10)
+                with dpg.group(horizontal=True, horizontal_spacing=60):
+                    with dpg.group():
+                        bam_btn = dpg.add_button(
+                            label="Choose a BAM file",
+                            callback=lambda: dpg.show_item("file_dialog_bam"),
+                            width=220, tag='tooltip_bam_sam'
+                        )
+                        self._secondary_buttons.append(bam_btn)
+                        dpg.add_text("", tag="sam_bam_path_lbl", wrap=500)
+
+                    with dpg.group():
+                        self.sam_threads = dpg.add_input_int(
+                            label="Threads", width=220, default_value=4, min_value=1, min_clamped=True
+                        )
+                        self._inputs.append(self.sam_threads)
+                        self.sam_remove_dups = dpg.add_checkbox(
+                            label="Remove duplicates (instead of marking)", default_value=False
+                        )
+                        self._inputs.append(self.sam_remove_dups)
+                        self.sam_compute_stats = dpg.add_checkbox(
+                            label="Compute QC reports (flagstat/stats/idxstats/depth)", default_value=True
+                        )
+                        self._inputs.append(self.sam_compute_stats)
+
+                        dpg.add_spacer(height=6)
+                        self.sam_out_prefix = dpg.add_input_text(
+                            label="Output prefix (optional)",
+                            hint="Leave empty to auto-generate next to the input file",
+                            width=320
+                        )
+                        self._inputs.append(self.sam_out_prefix)
+
+                        dpg.add_spacer(height=12)
+                        run_sam = dpg.add_button(
+                            label="Run samtools preprocess",
+                            callback=self.run_samtools_preprocess,
+                            width=240, height=38
+                        )
+                        self._primary_buttons.append(run_sam)
+
+            # —— Variant Calling (BAM → VCF) ——
+            with dpg.tab(label='Variant Calling (BAM→VCF)', parent="main_tabbar"):
+                dpg.add_text("\nCall variants with bcftools mpileup + call", indent=10)
+                dpg.add_spacer(height=10)
+                with dpg.group(horizontal=True, horizontal_spacing=60):
+
+                    with dpg.group():
+                        b1 = dpg.add_button(
+                            label="Choose BAM (single)",
+                            callback=lambda: dpg.show_item("file_dialog_bam_vc"),
+                            width=220, tag='tooltip_bam_vc'
+                        )
+                        self._secondary_buttons.append(b1)
+                        dpg.add_text("", tag="vc_bam_path_lbl", wrap=500)
+
+                        dpg.add_spacer(height=6)
+                        b2 = dpg.add_button(
+                            label="Choose BAM-list (.list)",
+                            callback=lambda: dpg.show_item("file_dialog_bamlist"),
+                            width=220, tag='tooltip_bamlist_vc'
+                        )
+                        self._secondary_buttons.append(b2)
+                        dpg.add_text("", tag="vc_bamlist_path_lbl", wrap=500)
+
+                        dpg.add_spacer(height=6)
+                        fa_btn = dpg.add_button(
+                            label="Choose reference FASTA",
+                            callback=lambda: dpg.show_item("file_dialog_fasta"),
+                            width=220, tag='tooltip_fa_vc'
+                        )
+                        self._secondary_buttons.append(fa_btn)
+                        dpg.add_text("", tag="vc_ref_path_lbl", wrap=500)
+
+                        dpg.add_spacer(height=6)
+                        reg_btn2 = dpg.add_button(
+                            label="Choose regions BED (optional)",
+                            callback=lambda: dpg.show_item("file_dialog_blacklist"),
+                            width=220, tag='tooltip_reg_vc'
+                        )
+                        self._secondary_buttons.append(reg_btn2)
+                        dpg.add_text("", tag="vc_regions_path_lbl", wrap=500)
+
+                    with dpg.group():
+                        self.vc_threads = dpg.add_input_int(label="Threads", width=220, default_value=4, min_value=1, min_clamped=True)
+                        self._inputs.append(self.vc_threads)
+                        self.vc_ploidy = dpg.add_input_int(label="Ploidy", width=220, default_value=2, min_value=1, min_clamped=True, tag='tooltip_ploidy')
+                        self._inputs.append(self.vc_ploidy)
+                        self.vc_min_bq = dpg.add_input_int(label="Min BaseQ", width=220, default_value=20, min_value=0, min_clamped=True, tag='tooltip_bq')
+                        self._inputs.append(self.vc_min_bq)
+                        self.vc_min_mq = dpg.add_input_int(label="Min MapQ", width=220, default_value=20, min_value=0, min_clamped=True, tag='tooltip_mq')
+                        self._inputs.append(self.vc_min_mq)
+
+                        dpg.add_spacer(height=6)
+                        self.vc_out_prefix = dpg.add_input_text(
+                            label="Output prefix (optional)",
+                            hint="Leave empty to auto-generate next to the BAM",
+                            width=320
+                        )
+                        self._inputs.append(self.vc_out_prefix)
+
+                        dpg.add_spacer(height=12)
+                        run_vc = dpg.add_button(
+                            label="Call variants (bcftools)",
+                            callback=self.run_variant_calling,
+                            width=240, height=38
+                        )
+                        self._primary_buttons.append(run_vc)
+
+            # —— Preprocess (bcftools) ——
+            with dpg.tab(label='Preprocess (bcftools)', parent="main_tabbar"):
+                dpg.add_text("\nNormalize / split multiallelic / sort / filter / set IDs (bcftools)", indent=10)
+                dpg.add_spacer(height=10)
+                with dpg.group(horizontal=True, horizontal_spacing=60):
+
+                    with dpg.group():
+                        vcf_btn_bcf = dpg.add_button(
+                            label="Choose a VCF file",
+                            callback=lambda: dpg.show_item("file_dialog_vcf"),
+                            width=220, tag='tooltip_vcf_bcf'
+                        )
+                        self._secondary_buttons.append(vcf_btn_bcf)
+                        dpg.add_text("", tag="bcf_vcf_path_lbl", wrap=500)
+
+                        dpg.add_spacer(height=6)
+                        fasta_btn = dpg.add_button(
+                            label="Choose reference FASTA (for left-align)",
+                            callback=lambda: dpg.show_item("file_dialog_fasta"),
+                            width=220, tag='tooltip_fa_bcf'
+                        )
+                        self._secondary_buttons.append(fasta_btn)
+                        dpg.add_text("", tag="bcf_ref_path_lbl", wrap=500)
+
+                        dpg.add_spacer(height=6)
+                        reg_btn = dpg.add_button(
+                            label="Choose regions BED (optional)",
+                            callback=lambda: dpg.show_item("file_dialog_blacklist"),
+                            width=220, tag='tooltip_reg_bcf'
+                        )
+                        self._secondary_buttons.append(reg_btn)
+                        dpg.add_text("", tag="bcf_regions_path_lbl", wrap=500)
+
+                    with dpg.group():
+                        self.bcf_split = dpg.add_checkbox(label="Split multiallelic", default_value=True)
+                        self._inputs.append(self.bcf_split)
+                        self.bcf_left  = dpg.add_checkbox(label="Left-align indels (needs FASTA)", default_value=True)
+                        self._inputs.append(self.bcf_left)
+                        self.bcf_sort  = dpg.add_checkbox(label="Sort", default_value=True)
+                        self._inputs.append(self.bcf_sort)
+                        self.bcf_setid = dpg.add_checkbox(label="Set ID to CHR:POS:REF:ALT", default_value=True)
+                        self._inputs.append(self.bcf_setid)
+                        self.bcf_compr = dpg.add_checkbox(label="Compress output (.vcf.gz)", default_value=True)
+                        self._inputs.append(self.bcf_compr)
+                        self.bcf_index = dpg.add_checkbox(label="Index output (tabix)", default_value=True)
+                        self._inputs.append(self.bcf_index)
+                        self.bcf_rmflt = dpg.add_checkbox(label="Keep only PASS (remove filtered)", default_value=False)
+                        self._inputs.append(self.bcf_rmflt)
+
+                        dpg.add_spacer(height=6)
+                        self.bcf_filter_expr = dpg.add_input_text(
+                            label="bcftools filter expression (optional)",
+                            hint="Example: QUAL>=30 && INFO/DP>=10",
+                            width=320
+                        )
+                        self._inputs.append(self.bcf_filter_expr)
+
+                        dpg.add_spacer(height=6)
+                        self.bcf_out_prefix = dpg.add_input_text(
+                            label="Output prefix (optional)",
+                            hint="Leave empty to auto-generate next to the input file",
+                            width=320
+                        )
+                        self._inputs.append(self.bcf_out_prefix)
+
+                        dpg.add_spacer(height=12)
+                        run_bcf = dpg.add_button(
+                            label="Run bcftools preprocess",
+                            callback=self.run_bcftools_preprocess,
+                            width=240, height=38
+                        )
+                        self._primary_buttons.append(run_bcf)
 
             # —— Check VCF File (QC) ——
             with dpg.tab(label='Check VCF File', parent="main_tabbar"):
@@ -317,8 +578,7 @@ class GWASApp:
 
             # —— Convert to PLINK ——
             with dpg.tab(label='Convert to PLINK', parent="main_tabbar"):
-                dpg.add_text("\nConvert a VCF file into PLINK BED and apply MAF/missing genotype filters.",
-                             indent=10)
+                dpg.add_text("\nConvert a VCF file into PLINK BED and apply MAF/missing genotype filters.", indent=10)
                 dpg.add_spacer(height=10)
                 with dpg.group(horizontal=True, horizontal_spacing=60):
                     with dpg.group():
@@ -506,9 +766,9 @@ class GWASApp:
                             )
                             self._inputs.append(self.aggregation_method)
 
+        # Log + Results windows
         self.log_win = dpg.add_window(label="Log", tag="LogWindow", width=800, height=400)
         self.logz = logger.mvLogger(self.log_win)
-
         dpg.add_window(label="Results", tag="ResultsWindow", width=1000, height=600, show=False)
 
         # Tooltips
@@ -546,6 +806,34 @@ class GWASApp:
             dpg.add_text("Limit SNPs in plots on huge datasets. Empty = all.", color=[79, 128, 90])
         with dpg.tooltip("tooltip_stats"):
             dpg.add_text("Enable advanced PDF plots for pheno/geno stats.", color=[79, 128, 90])
+
+        # samtools tooltip
+        with dpg.tooltip("tooltip_bam_sam"):
+            dpg.add_text("Select input BAM to clean and index.", color=[79, 128, 90])
+
+        # variant calling tooltips
+        with dpg.tooltip("tooltip_bam_vc"):
+            dpg.add_text("Single sample BAM for calling.", color=[79, 128, 90])
+        with dpg.tooltip("tooltip_bamlist_vc"):
+            dpg.add_text("Text file with one BAM per line (-b list) for joint calling.", color=[79, 128, 90])
+        with dpg.tooltip("tooltip_fa_vc"):
+            dpg.add_text("Reference FASTA (must be indexed .fai).", color=[79, 128, 90])
+        with dpg.tooltip("tooltip_reg_vc"):
+            dpg.add_text("Optional BED of regions to restrict calling.", color=[79, 128, 90])
+        with dpg.tooltip("tooltip_ploidy"):
+            dpg.add_text("Assumed ploidy used by bcftools call.", color=[79, 128, 90])
+        with dpg.tooltip("tooltip_bq"):
+            dpg.add_text("Minimum base quality for mpileup.", color=[79, 128, 90])
+        with dpg.tooltip("tooltip_mq"):
+            dpg.add_text("Minimum mapping quality for mpileup.", color=[79, 128, 90])
+
+        # bcftools tooltips
+        with dpg.tooltip("tooltip_vcf_bcf"):
+            dpg.add_text("Select input VCF/VCF.GZ to preprocess.", color=[79, 128, 90])
+        with dpg.tooltip("tooltip_fa_bcf"):
+            dpg.add_text("Reference FASTA is required for accurate left alignment in bcftools norm.", color=[79, 128, 90])
+        with dpg.tooltip("tooltip_reg_bcf"):
+            dpg.add_text("Regions BED to include (bcftools view -R). Optional.", color=[79, 128, 90])
 
         with dpg.tooltip("tooltip_vcf_qc"):
             dpg.add_text("Select a VCF/VCF.GZ file to evaluate.", color=[79, 128, 90])
@@ -641,22 +929,39 @@ class GWASApp:
         except Exception:
             return str(path)
 
+    def _get_appdata_path_safe(self, app_data):
+        try:
+            return self.get_selection_path(app_data)[0]
+        except Exception:
+            return None
+
+    def _set_virtual_selection(self, attr_name: str, file_path: str):
+        setattr(self, attr_name, {
+            'current_path': os.path.dirname(file_path) + '/',
+            'selections': {'file': file_path}
+        })
+
     # ——— Callbacks (files) ———
     def callback_vcf(self, s, app_data):
         self.vcf_app_data = app_data
         vcf_path, current_path = self.get_selection_path(self.vcf_app_data)
-        dpg.configure_item("file_dialog_variants", default_path=current_path)
+        if not vcf_path:
+            return
+        dpg.configure_item("file_dialog_variants", default_path=current_path or self.default_path)
         self.add_log('VCF Selected: ' + vcf_path)
         name = self._fmt_name(vcf_path)
         self._set_text("qc_vcf_path_lbl", name)
         self._set_text("conv_vcf_path_lbl", name)
+        self._set_text("bcf_vcf_path_lbl", name)
 
     def callback_bed(self, s, app_data):
         self.bed_app_data = app_data
         try:
             bed_path, current_path = self.get_selection_path(self.bed_app_data)
-            dpg.configure_item("file_dialog_cov", default_path=current_path)
-            dpg.configure_item("file_dialog_pheno", default_path=current_path)
+            if not bed_path:
+                return
+            dpg.configure_item("file_dialog_cov", default_path=current_path or self.default_path)
+            dpg.configure_item("file_dialog_pheno", default_path=current_path or self.default_path)
             self.add_log('BED file Selected: ' + bed_path)
             name = self._fmt_name(bed_path)
             self._set_text("gwas_bed_path_lbl", name)
@@ -667,7 +972,9 @@ class GWASApp:
     def callback_variants(self, s, app_data):
         self.variants_app_data = app_data
         variants_path, current_path = self.get_selection_path(self.variants_app_data)
-        dpg.configure_item("file_dialog_vcf", default_path=current_path)
+        if not variants_path:
+            return
+        dpg.configure_item("file_dialog_vcf", default_path=current_path or self.default_path)
         self.add_log('IDs file Selected: ' + variants_path)
         self._set_text("ids_path_lbl", self._fmt_name(variants_path))
 
@@ -675,8 +982,10 @@ class GWASApp:
         self.pheno_app_data = app_data
         try:
             pheno_path, current_path = self.get_selection_path(self.pheno_app_data)
-            dpg.configure_item("file_dialog_cov", default_path=current_path)
-            dpg.configure_item("file_dialog_bed", default_path=current_path)
+            if not pheno_path:
+                return
+            dpg.configure_item("file_dialog_cov", default_path=current_path or self.default_path)
+            dpg.configure_item("file_dialog_bed", default_path=current_path or self.default_path)
             self.add_log('Pheno File Selected: ' + pheno_path)
             name = self._fmt_name(pheno_path)
             self._set_text("gwas_pheno_path_lbl", name)
@@ -688,8 +997,10 @@ class GWASApp:
         self.cov_app_data = app_data
         try:
             cov_path, current_path = self.get_selection_path(self.cov_app_data)
-            dpg.configure_item("file_dialog_bed", default_path=current_path)
-            dpg.configure_item("file_dialog_pheno", default_path=current_path)
+            if not cov_path:
+                return
+            dpg.configure_item("file_dialog_bed", default_path=current_path or self.default_path)
+            dpg.configure_item("file_dialog_pheno", default_path=current_path or self.default_path)
             self.add_log('Covariates File Selected: ' + cov_path)
             self._set_text("gwas_cov_path_lbl", self._fmt_name(cov_path))
         except TypeError:
@@ -699,30 +1010,85 @@ class GWASApp:
         self.blacklist_app_data = app_data
         try:
             bl_path, _ = self.get_selection_path(self.blacklist_app_data)
-            self.add_log('Blacklist BED Selected: ' + bl_path)
-            self._set_text("qc_bl_path_lbl", self._fmt_name(bl_path))
+            if not bl_path:
+                return
+            self.add_log('Blacklist/Regions BED Selected: ' + bl_path)
+            # update all places that show a regions BED
+            for tag in ("qc_bl_path_lbl", "bcf_regions_path_lbl", "vc_regions_path_lbl"):
+                self._set_text(tag, self._fmt_name(bl_path))
         except TypeError:
             self.add_log('Invalid blacklist file', error=True)
 
-    def get_selection_path(self, app_data):
-        current_path = app_data['current_path'] + '/'
-        k = app_data['selections']
+    def callback_fasta(self, s, app_data):
+        self.fasta_app_data = app_data
         try:
-            for _, value in k.items():
-                file_path = value
-            return file_path, current_path
-        except UnboundLocalError:
-            pass
+            fasta_path, _ = self.get_selection_path(self.fasta_app_data)
+            if not fasta_path:
+                return
+            self.add_log('FASTA Selected: ' + fasta_path)
+            # update both bcftools + variant calling labels if present
+            for tag in ("bcf_ref_path_lbl", "vc_ref_path_lbl"):
+                self._set_text(tag, self._fmt_name(fasta_path))
+        except TypeError:
+            self.add_log('Invalid FASTA file', error=True)
+
+    def callback_bam(self, s, app_data):
+        self.bam_app_data = app_data
+        try:
+            bam_path, _ = self.get_selection_path(self.bam_app_data)
+            if not bam_path:
+                return
+            self.add_log('BAM Selected: ' + bam_path)
+            self._set_text("sam_bam_path_lbl", self._fmt_name(bam_path))
+        except Exception:
+            self.add_log('Invalid BAM file', error=True)
+
+    # variant calling callbacks
+    def callback_bam_vc(self, s, app_data):
+        self.bam_vc_app_data = app_data
+        try:
+            bam_path, _ = self.get_selection_path(self.bam_vc_app_data)
+            if not bam_path:
+                return
+            self.add_log('VC-BAM Selected: ' + bam_path)
+            self._set_text("vc_bam_path_lbl", self._fmt_name(bam_path))
+        except Exception:
+            self.add_log('Invalid BAM file', error=True)
+
+    def callback_bamlist_vc(self, s, app_data):
+        self.bamlist_app_data = app_data
+        try:
+            lst_path, _ = self.get_selection_path(self.bamlist_app_data)
+            if not lst_path:
+                return
+            self.add_log('BAM-list Selected: ' + lst_path)
+            self._set_text("vc_bamlist_path_lbl", self._fmt_name(lst_path))
+        except Exception:
+            self.add_log('Invalid BAM-list file', error=True)
+
+    def get_selection_path(self, app_data):
+        if not app_data:
+            return None, None
+        current_path = (app_data.get('current_path') or '') + '/'
+        sels = app_data.get('selections') or {}
+        file_path = None
+        for _, value in sels.items():
+            file_path = value
+            break
+        return file_path, current_path
 
     def callback_save_results(self, s, app_data):
         self.results_directory = app_data
         results_path, current_path = self.get_selection_path(self.results_directory)
+        if not current_path:
+            self.add_log('No directory selected.', error=True)
+            return
         save_dir = self.helper.save_results(
             os.getcwd(), current_path,
             self.gwas_result_name, self.gwas_result_name_top,
-            self.manhatten_plot_name, self.qq_plot_name, self.algorithm,
+            self.manhatten_plot_name, self.qq_plot_name, getattr(self, "algorithm", "Unknown"),
             self.genomic_predict_name, self.gp_plot_name, self.gp_plot_name_scatter,
-            self.add_log, self.settings_lst, self.pheno_stats_name, self.geno_stats_name
+            self.add_log, getattr(self, "settings_lst", []), self.pheno_stats_name, self.geno_stats_name
         )
         self.add_log('Results saved in: ' + save_dir)
 
@@ -766,10 +1132,176 @@ class GWASApp:
                             pass
 
     # ——— Actions ———
+    def run_samtools_preprocess(self, s, data):
+        try:
+            bam_in = self.get_selection_path(self.bam_app_data)[0]
+        except Exception:
+            self.add_log('Please select a BAM file first (Preprocess samtools).', error=True)
+            return
+
+        if not bam_in:
+            self.add_log('Please select a BAM file first (Preprocess samtools).', error=True)
+            return
+
+        threads = max(1, int(dpg.get_value(self.sam_threads)))
+        remove_dups = bool(dpg.get_value(self.sam_remove_dups))
+        compute_stats = bool(dpg.get_value(self.sam_compute_stats))
+        out_prefix = (dpg.get_value(self.sam_out_prefix) or None)
+
+        self.add_log("Running samtools preprocess...")
+        try:
+            outs = self.sam.preprocess(
+                input_bam=bam_in,
+                out_prefix=out_prefix,
+                threads=threads,
+                remove_dups=remove_dups,
+                compute_stats=compute_stats,
+                log=self.add_log,
+                keep_temps=False
+            )
+            self.sam_out_last = outs.final_bam
+            self.add_log(f"samtools preprocess: Done. Final BAM: {outs.final_bam}")
+            if outs.bai:
+                self.add_log(f"Index: {outs.bai}")
+            for k, p in outs.stats_files.items():
+                self.add_log(f"{k} report: {p}")
+        except SamtoolsError as e:
+            self.add_log(f"samtools error: {e}", error=True)
+        except Exception as e:
+            self.add_log(f"Unexpected error: {e}", error=True)
+
+    def run_variant_calling(self, s, data):
+        if not self.vcaller:
+            self.add_log("variant_caller_utils not found. Please add it to the project.", error=True)
+            return
+
+        # Prefer BAM-list if provided, else single BAM
+        bamlist = self._get_appdata_path_safe(self.bamlist_app_data)
+        bam_single = self._get_appdata_path_safe(self.bam_vc_app_data)
+        bam_spec = bamlist or bam_single
+        if not bam_spec:
+            self.add_log('Please select a BAM (or BAM-list) and FASTA first.', error=True)
+            return
+
+        fasta_path = self._get_appdata_path_safe(self.fasta_app_data)
+        if not fasta_path:
+            self.add_log('Please select a reference FASTA first.', error=True)
+            return
+
+        regions_path = self._get_appdata_path_safe(self.blacklist_app_data)
+        threads = max(1, int(dpg.get_value(self.vc_threads)))
+        ploidy = max(1, int(dpg.get_value(self.vc_ploidy)))
+        min_bq = max(0, int(dpg.get_value(self.vc_min_bq)))
+        min_mq = max(0, int(dpg.get_value(self.vc_min_mq)))
+        outpfx = dpg.get_value(self.vc_out_prefix) or None
+
+        self.add_log("Running variant calling...")
+        try:
+            # API expected from variant_caller_utils
+            vcf_gz, tbi = self.vcaller.call_variants(
+                input_path=bam_spec,
+                reference_fasta=fasta_path,
+                out_prefix=outpfx,
+                threads=threads,
+                regions_bed=regions_path,
+                min_baseq=min_bq,
+                min_mapq=min_mq,
+                ploidy=ploidy,
+                log=self.add_log
+            )
+            self.vc_out_last = vcf_gz
+
+            # Make downstream tabs pick it up automatically
+            self._set_virtual_selection('vcf_app_data', vcf_gz)
+            name = self._fmt_name(vcf_gz)
+            for tag in ("bcf_vcf_path_lbl", "qc_vcf_path_lbl", "conv_vcf_path_lbl"):
+                self._set_text(tag, name)
+
+            self.add_log(f"Variant calling: Done → {vcf_gz}")
+            if tbi and os.path.exists(tbi):
+                self.add_log(f"Index: {tbi}")
+        except VariantCallerError as e:
+            self.add_log(f"variant calling error: {e}", error=True)
+        except TypeError:
+            # Fallback if your function uses another signature (older/newer)
+            try:
+                vcf_gz, tbi = self.vcaller.call_variants(
+                    bam_spec, fasta_path, out_prefix=outpfx, threads=threads,
+                    regions_bed=regions_path, min_baseq=min_bq, min_mapq=min_mq,
+                    ploidy=ploidy, log=self.add_log
+                )
+                self.vc_out_last = vcf_gz
+                self._set_virtual_selection('vcf_app_data', vcf_gz)
+                name = self._fmt_name(vcf_gz)
+                for tag in ("bcf_vcf_path_lbl", "qc_vcf_path_lbl", "conv_vcf_path_lbl"):
+                    self._set_text(tag, name)
+                self.add_log(f"Variant calling: Done → {vcf_gz}")
+            except Exception as e2:
+                self.add_log(f"variant calling error: {e2}", error=True)
+        except Exception as e:
+            self.add_log(f"Unexpected error: {e}", error=True)
+
+    def run_bcftools_preprocess(self, s, data):
+        vcf_path = self._get_appdata_path_safe(self.vcf_app_data)
+        if not vcf_path:
+            self.add_log('Please select a VCF file first (Preprocess tab).', error=True)
+            return
+
+        fasta_path = self._get_appdata_path_safe(self.fasta_app_data)
+        regions_path = self._get_appdata_path_safe(self.blacklist_app_data)
+
+        split_m = bool(dpg.get_value(self.bcf_split))
+        left_al = bool(dpg.get_value(self.bcf_left))
+        do_sort = bool(dpg.get_value(self.bcf_sort))
+        set_id  = bool(dpg.get_value(self.bcf_setid))
+        compr   = bool(dpg.get_value(self.bcf_compr))
+        index   = bool(dpg.get_value(self.bcf_index))
+        rmflt   = bool(dpg.get_value(self.bcf_rmflt))
+        filt    = dpg.get_value(self.bcf_filter_expr) or None
+        outpfx  = dpg.get_value(self.bcf_out_prefix) or None
+
+        self.add_log("Running bcftools preprocess...")
+        try:
+            final_vcf, stats = self.bcft.preprocess(
+                input_vcf=vcf_path,
+                out_prefix=outpfx,
+                log=self.add_log,
+                ref_fasta=fasta_path,
+                regions_bed=regions_path,
+                split_multiallelic=split_m,
+                left_align=left_al,
+                do_sort=do_sort,
+                set_id_from_fields=set_id,
+                filter_expr=filt,
+                remove_filtered=rmflt,
+                compress_output=compr,
+                index_output=index,
+                keep_temps=False
+            )
+            self.bcf_out_last = final_vcf
+
+            self._set_virtual_selection('vcf_app_data', final_vcf)
+            name = self._fmt_name(final_vcf)
+            self._set_text("bcf_vcf_path_lbl", name)
+            self._set_text("qc_vcf_path_lbl", name)
+            self._set_text("conv_vcf_path_lbl", name)
+
+            self.add_log("bcftools preprocess: Done.")
+            if stats and os.path.exists(stats):
+                self.add_log(f"bcftools stats saved: {stats}")
+        except BCFtoolsError as e:
+            self.add_log(f"bcftools error: {e}", error=True)
+        except Exception as e:
+            self.add_log(f"Unexpected error: {e}", error=True)
+
     def run_vcf_qc(self, s, data):
         try:
             vcf_path = self.get_selection_path(self.vcf_app_data)[0]
         except Exception:
+            self.add_log('Please select a VCF file first.', error=True)
+            return
+
+        if not vcf_path:
             self.add_log('Please select a VCF file first.', error=True)
             return
 
@@ -778,7 +1310,7 @@ class GWASApp:
         except Exception:
             pass
 
-        deep = bool(dpg.get_value(self.deep_scan))
+        _ = bool(dpg.get_value(self.deep_scan))
         self.add_log('Running VCF Quality Check...')
 
         report = self.vcf_qc_checker.evaluate(vcf_path, log_fn=self.add_log)
@@ -848,6 +1380,9 @@ class GWASApp:
         geno = str(dpg.get_value(user_data[1]))
         vcf_path, _ = self.get_selection_path(self.vcf_app_data)
         variants_path = None if self.variants_app_data is None else self.get_selection_path(self.variants_app_data)[0]
+        if not vcf_path:
+            self.add_log('Please select a VCF file first.', error=True)
+            return
         self.add_log('Start converting VCF to BED...')
         out_prefix = f"{vcf_path.split('.')[0]}_maf{round(float(maf), 2)}_geno{round(float(geno), 2)}"
         plink_log = self.gwas.vcf_to_bed(vcf_path, variants_path, out_prefix, maf, geno)
@@ -1128,6 +1663,28 @@ class GWASApp:
             self.logz.log_error(message)
         else:
             self.logz.log_info(message)
+
+    def _check_cli_versions(self):
+        try:
+            self.add_log(self.sam.version())
+        except Exception as e:
+            self.add_log(f"samtools check failed: {e}", error=True)
+        try:
+            out = subprocess.run([resolve_tool("bcftools"), "--version"], capture_output=True, text=True)
+            line0 = out.stdout.splitlines()[0] if out.stdout else "bcftools (unknown)"
+            self.add_log(line0)
+        except Exception as e:
+            self.add_log(f"bcftools check failed: {e}", error=True)
+        try:
+            out = subprocess.run([resolve_tool("bgzip"), "--version"], capture_output=True, text=True)
+            self.add_log(out.stdout.splitlines()[0] if out.stdout else "bgzip (unknown)")
+        except Exception as e:
+            self.add_log(f"bgzip check failed: {e}", error=True)
+        try:
+            out = subprocess.run([resolve_tool("tabix"), "--version"], capture_output=True, text=True)
+            self.add_log(out.stdout.splitlines()[0] if out.stdout else "tabix (unknown)")
+        except Exception as e:
+            self.add_log(f"tabix check failed: {e}", error=True)
 
     # ——— Runner ———
     def run(self):
