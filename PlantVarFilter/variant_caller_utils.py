@@ -1,0 +1,138 @@
+# variant_caller_utils.py
+import os, shutil, subprocess, tempfile
+from typing import List, Optional, Tuple, Callable, Union
+
+try:
+    from PlantVarFilter.linux import resolve_tool
+except Exception:
+    resolve_tool = None
+
+LogFn = Callable[[str], None]
+
+class VariantCallerError(RuntimeError):
+    pass
+
+def _resolve_exe(name: str) -> str:
+    if resolve_tool is not None:
+        p = resolve_tool(name)
+        if p:
+            return p
+    p = shutil.which(name)
+    if p:
+        return p
+    raise VariantCallerError(f"Executable not found: {name}. Bundle it under PlantVarFilter/linux or add to PATH.")
+
+class VariantCaller:
+    def __init__(self,
+                 bcftools_bin: Optional[str] = None,
+                 bgzip_bin: Optional[str] = None,
+                 tabix_bin: Optional[str] = None):
+        self.bcftools = bcftools_bin or _resolve_exe("bcftools")
+        self.bgzip    = bgzip_bin    or _resolve_exe("bgzip")
+        self.tabix    = tabix_bin    or _resolve_exe("tabix")
+
+    def _run(self, cmd: List[str], log: LogFn):
+        log(" ".join(cmd))
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = res.stdout.decode("utf-8", errors="replace")
+        if res.returncode != 0:
+            log(out)
+            raise VariantCallerError(f"Command failed: {' '.join(cmd)}")
+        if out.strip():
+            for ln in out.strip().splitlines():
+                log(ln)
+
+    def call_bcftools(self,
+                      bams: Union[List[str], str],
+                      ref_fasta: str,
+                      out_prefix: Optional[str] = None,
+                      regions_bed: Optional[str] = None,
+                      threads: int = 8,
+                      min_baseq: int = 13,
+                      min_mapq: int = 20,
+                      ploidy: int = 2,
+                      log: LogFn = print) -> Tuple[str, str]:
+        """
+         (vcf_gz, tbi)
+        """
+        if not os.path.exists(ref_fasta):
+            raise VariantCallerError(f"Reference FASTA not found: {ref_fasta}")
+
+
+        workdir = os.getcwd()
+        if isinstance(bams, list) and len(bams) > 0:
+            workdir = os.path.dirname(os.path.abspath(bams[0])) or workdir
+        elif isinstance(bams, str) and os.path.exists(bams):
+            workdir = os.path.dirname(os.path.abspath(bams)) or workdir
+
+        if not out_prefix:
+            out_prefix = os.path.join(workdir, "calls")
+
+        vcf_gz = f"{out_prefix}.vcf.gz"
+
+        bam_list_path = None
+        if isinstance(bams, list):
+            if len(bams) == 0:
+                raise VariantCallerError("No BAMs provided.")
+            if len(bams) == 1:
+                single_bam = bams[0]
+            else:
+                fd, tmp = tempfile.mkstemp(prefix="bamlist_", suffix=".list", dir=workdir)
+                os.close(fd)
+                with open(tmp, "w") as fh:
+                    for b in bams:
+                        fh.write(b + "\n")
+                bam_list_path = tmp
+                single_bam = None
+        else:
+            if not os.path.exists(bams):
+                raise VariantCallerError(f"BAM list not found: {bams}")
+            bam_list_path = bams
+            single_bam = None
+
+        try:
+            # bcftools mpileup
+            mp_cmd = [
+                self.bcftools, "mpileup",
+                "-Ou",
+                "-f", ref_fasta,
+                "-q", str(min_mapq),
+                "-Q", str(min_baseq),
+                "-a", "FORMAT/AD,FORMAT/DP"
+            ]
+            if regions_bed and os.path.exists(regions_bed):
+                mp_cmd += ["-R", regions_bed]
+            if bam_list_path:
+                mp_cmd += ["-b", bam_list_path]
+            elif single_bam:
+                mp_cmd += [single_bam]
+
+            # bcftools call
+            call_cmd = [
+                self.bcftools, "call",
+                "-mv",
+                "-ploidy", str(ploidy),
+                "-Oz", "-o", vcf_gz
+            ]
+
+            # Pipe: mpileup | call
+            log(" | ".join([" ".join(mp_cmd), " ".join(call_cmd)]))
+            p1 = subprocess.Popen(mp_cmd, stdout=subprocess.PIPE)
+            p2 = subprocess.Popen(call_cmd, stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            p1.stdout.close()
+            out = p2.communicate()[0]
+            rc = p2.returncode
+            if rc != 0:
+                out_txt = (out or b"").decode("utf-8", errors="replace")
+                raise VariantCallerError(f"bcftools call failed:\n{out_txt}")
+
+            # index
+            self._run([self.tabix, "-f", "-p", "vcf", vcf_gz], log)
+
+            return vcf_gz, vcf_gz + ".tbi"
+        finally:
+            if bam_list_path and os.path.exists(bam_list_path):
+                try:
+                    os.remove(bam_list_path)
+                except Exception:
+                    pass
