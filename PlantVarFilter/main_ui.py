@@ -1,250 +1,104 @@
-# main_gui.py — PlantVarFilter
-# (plant-themed UI + docking + improved dialogs + header icon + VCF QC tab + QC plots
-#  + file labels + samtools preprocess + bcftools preprocess + variant calling BAM→VCF)
-
+# main_ui.py
 import os
 import shutil
 import subprocess
 import dearpygui.dearpygui as dpg
-from dearpygui_ext import logger
 
+# optional logger
+try:
+    from dearpygui_ext import logger
+except Exception:
+    logger = None
+
+# project backends
 from vcf_quality import VCFQualityChecker
-
 from PlantVarFilter.gwas_pipeline import GWAS
 from PlantVarFilter.genomic_prediction_pipeline import GenomicPrediction
 from PlantVarFilter.helpers import HELPERS
 from PlantVarFilter.pipeline_plots import Plot
-
 from pysnptools.snpreader import Bed, Pheno
 import pysnptools.util as pstutil
-
 from bcftools_utils import BCFtools, BCFtoolsError
 from samtools_utils import Samtools, SamtoolsError
 
-# —— variant calling helper (new) ——
 try:
     from variant_caller_utils import VariantCaller, VariantCallerError
-except Exception:  # graceful fallback if file missing
+except Exception:
     VariantCaller = None
 
-# Prefer bundled binaries under PlantVarFilter/linux, else PATH
+# resolve tool path
 try:
     from PlantVarFilter.linux import resolve_tool
 except Exception:
     def resolve_tool(name: str) -> str:
         return shutil.which(name) or name
 
+# UI modules
+from ui.ui_theme import (
+    setup_app_chrome,
+    build_dark_theme,
+    build_light_theme,
+    build_component_themes,
+    apply_theme,
+    set_font_scale,
+    set_accent_color,  # accent updater (runtime tags)
+    get_primary_button_theme_tag  # runtime-aware theme getter
+)
 
-def main():
-    dpg.create_context()
-    dpg.configure_app(docking=True, docking_space=True)
-    app = GWASApp()
-    app.run()
-    dpg.destroy_context()
+from ui.ui_pages import build_pages
 
 
 class GWASApp:
     def __init__(self):
+        # common state
+        self._inputs = []
+        self._primary_buttons = []
+        self._secondary_buttons = []
+        self._file_dialogs = []
+        self.default_path = os.path.expanduser("~")
+        self.night_mode = True
+
+        # watermark params
+        self._wm_alpha = 48
+        self._wm_scale = 0.35
+
+        # backends
         self.gwas = GWAS()
         self.helper = HELPERS()
         self.genomic_predict_class = GenomicPrediction()
         self.plot_class = Plot()
-
         self.vcf_qc_checker = VCFQualityChecker(max_sites_scan=200_000, min_sites_required=200)
-        self.blacklist_app_data = None
-
-        # bcftools helpers
         self.bcft = BCFtools(
             bcftools_bin=resolve_tool("bcftools"),
             bgzip_bin=resolve_tool("bgzip"),
             tabix_bin=resolve_tool("tabix")
         )
-        self.fasta_app_data = None
-        self.bcf_out_last = None
-
-        # samtools helper
         self.sam = Samtools(exe=resolve_tool("samtools"))
-        self.bam_app_data = None
-        self.sam_out_last = None
-
-        # variant caller (bcftools mpileup+call)
         self.vcaller = VariantCaller(
             bcftools_bin=resolve_tool("bcftools"),
             bgzip_bin=resolve_tool("bgzip"),
             tabix_bin=resolve_tool("tabix")
         ) if VariantCaller else None
-        self.bam_vc_app_data = None        # single BAM for calling
-        self.bamlist_app_data = None       # .list of BAMs for calling
-        self.vc_out_last = None            # produced VCF
 
-        with dpg.font_registry():
-            script_dir = os.path.dirname(__file__)
-            font_path = os.path.join(script_dir, "test.ttf")
-            self.font = dpg.add_font(font_path, 40, tag="ttf-font") if os.path.exists(font_path) else None
-
-        # ——— Themes ———
-        with dpg.theme() as self.theme_plant_dark:
-            with dpg.theme_component(dpg.mvAll):
-                dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (18, 24, 20))
-                dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (24, 32, 26))
-                dpg.add_theme_color(dpg.mvThemeCol_PopupBg, (26, 34, 28))
-                dpg.add_theme_color(dpg.mvThemeCol_Text, (220, 235, 220))
-                dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, (150, 165, 150))
-                dpg.add_theme_color(dpg.mvThemeCol_Border, (70, 80, 75))
-                dpg.add_theme_color(dpg.mvThemeCol_Separator, (70, 80, 75))
-                dpg.add_theme_color(dpg.mvThemeCol_Tab, (28, 36, 30))
-                dpg.add_theme_color(dpg.mvThemeCol_TabHovered, (38, 50, 42))
-                dpg.add_theme_color(dpg.mvThemeCol_TabActive, (36, 48, 40))
-                dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (28, 40, 34))
-                dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (46, 84, 66))
-                dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 14, 14)
-                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 10, 8)
-                dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 10, 8)
-                dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 10)
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-                dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 10)
-                dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 8)
-                dpg.add_theme_style(dpg.mvStyleVar_TabRounding, 8)
-
-        with dpg.theme() as self.theme_plant_light:
-            with dpg.theme_component(dpg.mvAll):
-                dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (240, 245, 238))
-                dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (235, 242, 232))
-                dpg.add_theme_color(dpg.mvThemeCol_PopupBg, (230, 238, 226))
-                dpg.add_theme_color(dpg.mvThemeCol_Text, (30, 45, 35))
-                dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, (110, 125, 115))
-                dpg.add_theme_color(dpg.mvThemeCol_Border, (180, 190, 185))
-                dpg.add_theme_color(dpg.mvThemeCol_Separator, (180, 190, 185))
-                dpg.add_theme_color(dpg.mvThemeCol_Tab, (222, 235, 224))
-                dpg.add_theme_color(dpg.mvThemeCol_TabHovered, (208, 228, 214))
-                dpg.add_theme_color(dpg.mvThemeCol_TabActive, (206, 226, 210))
-                dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (206, 226, 210))
-                dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (186, 214, 194))
-                dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 14, 14)
-                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 10, 8)
-                dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 10, 8)
-                dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 10)
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-                dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 10)
-                dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 8)
-                dpg.add_theme_style(dpg.mvStyleVar_TabRounding, 8)
-
-        with dpg.theme() as self.theme_primary_btn_dark:
-            with dpg.theme_component(dpg.mvButton):
-                dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 179, 113))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (80, 200, 140))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (50, 160, 100))
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 10)
-                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 12, 8)
-
-        with dpg.theme() as self.theme_primary_btn_light:
-            with dpg.theme_component(dpg.mvButton):
-                dpg.add_theme_color(dpg.mvThemeCol_Button, (90, 190, 120))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (110, 205, 140))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (75, 175, 110))
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 10)
-                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 12, 8)
-
-        with dpg.theme() as self.theme_secondary_btn_dark:
-            with dpg.theme_component(dpg.mvButton):
-                dpg.add_theme_color(dpg.mvThemeCol_Button, (45, 55, 50))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (60, 75, 65))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (40, 50, 45))
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 10, 6)
-
-        with dpg.theme() as self.theme_secondary_btn_light:
-            with dpg.theme_component(dpg.mvButton):
-                dpg.add_theme_color(dpg.mvThemeCol_Button, (210, 232, 216))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (198, 224, 206))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (188, 214, 198))
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 10, 6)
-
-        with dpg.theme() as self.theme_inputs_dark:
-            with dpg.theme_component(dpg.mvInputFloat):
-                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (30, 40, 32))
-                dpg.add_theme_color(dpg.mvThemeCol_Text, (220, 235, 220))
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-            with dpg.theme_component(dpg.mvInputInt):
-                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (30, 40, 32))
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-            with dpg.theme_component(dpg.mvInputText):
-                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (30, 40, 32))
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-            with dpg.theme_component(dpg.mvCombo):
-                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (30, 40, 32))
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-
-        with dpg.theme() as self.theme_inputs_light:
-            light_bg = (215, 228, 215)
-            with dpg.theme_component(dpg.mvInputFloat):
-                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, light_bg)
-                dpg.add_theme_color(dpg.mvThemeCol_Text, (30, 45, 35))
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-            with dpg.theme_component(dpg.mvInputInt):
-                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, light_bg)
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-            with dpg.theme_component(dpg.mvInputText):
-                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, light_bg)
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-            with dpg.theme_component(dpg.mvCombo):
-                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, light_bg)
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-
-        with dpg.theme() as self.theme_fd_dark:
-            with dpg.theme_component(dpg.mvFileDialog):
-                dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (22, 28, 24))
-                dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (28, 40, 34))
-                dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (46, 84, 66))
-                dpg.add_theme_color(dpg.mvThemeCol_Header, (40, 56, 48))
-                dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, (54, 76, 62))
-                dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, (60, 96, 76))
-                dpg.add_theme_color(dpg.mvThemeCol_TableHeaderBg, (34, 48, 40))
-                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (30, 40, 32))
-                dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 179, 113))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (80, 200, 140))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (50, 160, 100))
-                dpg.add_theme_color(dpg.mvThemeCol_Text, (220, 235, 220))
-                dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 10)
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-
-        with dpg.theme() as self.theme_fd_light:
-            with dpg.theme_component(dpg.mvFileDialog):
-                dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (244, 248, 242))
-                dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (206, 226, 210))
-                dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (186, 214, 194))
-                dpg.add_theme_color(dpg.mvThemeCol_Header, (208, 228, 214))
-                dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, (198, 222, 206))
-                dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, (188, 214, 198))
-                dpg.add_theme_color(dpg.mvThemeCol_TableHeaderBg, (210, 230, 214))
-                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (215, 228, 215))
-                dpg.add_theme_color(dpg.mvThemeCol_Button, (90, 190, 120))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (110, 205, 140))
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (75, 175, 110))
-                dpg.add_theme_color(dpg.mvThemeCol_Text, (30, 45, 35))
-                dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 10)
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 8)
-
-        self._primary_buttons = []
-        self._secondary_buttons = []
-        self._inputs = []
-        self._file_dialogs = []
-        self.night_mode = True
-
-        self.header_group = None
-        self.brand_title = None
-        self.brand_tagline = None
-        self.logo_draw = None
-
+        # selections
         self.vcf_app_data = None
         self.variants_app_data = None
         self.results_directory = None
         self.bed_app_data = None
         self.pheno_app_data = None
         self.cov_app_data = None
-        self.default_path = os.path.expanduser("~")
+        self.blacklist_app_data = None
+        self.fasta_app_data = None
+        self.bam_app_data = None
+        self.bam_vc_app_data = None
+        self.bamlist_app_data = None
 
+        # last outputs
+        self.bcf_out_last = None
+        self.sam_out_last = None
+        self.vc_out_last = None
+
+        # plot/result filenames
         self.gwas_result_name = "gwas_results.csv"
         self.gwas_result_name_top = "gwas_results_top10000.csv"
         self.genomic_predict_name = "genomic_prediction_results.csv"
@@ -255,673 +109,454 @@ class GWASApp:
         self.pheno_stats_name = 'pheno_statistics.pdf'
         self.geno_stats_name = 'geno_statistics.pdf'
 
+        # UI handles
+        self.log_win = None
+        self.logz = None
+
+        # handles created by pages
+        self.sam_threads = None
+        self.sam_remove_dups = None
+        self.sam_compute_stats = None
+        self.sam_out_prefix = None
+
+        self.vc_threads = None
+        self.vc_ploidy = None
+        self.vc_min_bq = None
+        self.vc_min_mq = None
+        self.vc_out_prefix = None
+
+        self.bcf_split = None
+        self.bcf_left = None
+        self.bcf_sort = None
+        self.bcf_setid = None
+        self.bcf_compr = None
+        self.bcf_index = None
+        self.bcf_rmflt = None
+        self.bcf_filter_expr = None
+        self.bcf_out_prefix = None
+
+        self.deep_scan = None
+
+        self.gwas_combo = None
+        self.gwas_gp = None
+
+        self.nr_jobs = None
+        self.gb_goal = None
+        self.plot_stats = None
         self.snp_limit = None
+        self.train_size_set = None
+        self.estim_set = None
+        self.max_dep_set = None
+        self.model_nr = None
+        self.aggregation_method = None
 
-        self.setup_gui()
-        self._check_cli_versions()
+        # navigation state
+        self._nav_buttons = {}  # key -> button id
+        self._pages = {}  # key -> page tag (alias)
+        self._active_key = None
 
-    # ——— UI ———
+        # nav order and labels
+        self._nav_items = [
+            ("pre_sam", "Preprocess (samtools)"),
+            ("vc", "Variant Calling (BAM/VCF)"),
+            ("pre_bcf", "Preprocess (bcftools)"),
+            ("check_vcf", "Check VCF File"),
+            ("plink", "Convert to PLINK"),
+            ("gwas", "GWAS Analysis"),
+            ("gp", "Genomic Prediction"),
+            ("settings", "Settings"),
+        ]
+
+    # ---------------- UI build ----------------
     def setup_gui(self):
-        dpg.create_viewport(title='PlantVarFilter', width=2000, height=1200, resizable=True)
+        setup_app_chrome(base_size=18)
+        build_dark_theme()
+        build_light_theme()
+        build_component_themes()
+        apply_theme(dark=True)
 
-        with dpg.window(tag="PrimaryWindow", no_close=True, no_move=True, no_resize=True,
-                        no_title_bar=True, no_background=True):
+        with dpg.window(
+                tag="PrimaryWindow",
+                no_title_bar=True, no_move=True, no_resize=True, no_close=True, no_collapse=True,
+                pos=(0, 0)
+        ):
             pass
         dpg.set_primary_window("PrimaryWindow", True)
 
-        # File dialogs
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_vcf,
+        self._build_file_dialogs()
+
+        with dpg.window(label="Workspace", tag="WorkspaceWindow", width=1600, height=1000, pos=(10, 10)):
+            with dpg.group(horizontal=True, horizontal_spacing=12):
+
+                # Sidebar
+                with dpg.child_window(tag="Sidebar", width=240, border=True):
+                    dpg.add_spacer(height=8)
+                    self._build_header(parent="Sidebar")
+                    dpg.add_spacer(height=6)
+                    dpg.add_separator()
+                    dpg.add_spacer(height=8)
+
+                    for key, label in self._nav_items:
+                        btn = dpg.add_button(
+                            label=label,
+                            width=-1,
+                            height=36,
+                            callback=self._nav_click,
+                            user_data=key
+                        )
+                        self._nav_buttons[key] = btn
+                        self._bind_nav_button_theme(btn, active=False)
+                        dpg.add_spacer(height=6)
+
+                # Content area
+                with dpg.child_window(tag="content_area", width=-1, border=True):
+                    self._build_header(parent="content_area", big=True)
+                    dpg.add_spacer(height=6)
+                    dpg.add_separator()
+                    dpg.add_spacer(height=8)
+
+                    built = build_pages(self, parent="content_area")
+                    if isinstance(built, dict):
+                        self._pages.update(built)
+
+        # index pages from UI
+        self._index_pages_from_ui()
+        self.add_log(f"[UI] Pages discovered: {list(self._pages.keys()) or 'NONE'}", warn=not bool(self._pages))
+
+        # settings callbacks
+        settings_cbs = {
+            "settings_dark_toggle": self.toggle_theme,
+            "settings_font_scale": self._on_font_scale_change,
+            "settings_accent_combo": self._on_accent_change,
+        }
+        for tag, cb in settings_cbs.items():
+            if dpg.does_item_exist(tag):
+                dpg.set_item_callback(tag, cb)
+
+        self._build_tooltips()
+
+        self.log_win = dpg.add_window(label="Log", tag="LogWindow", width=800, height=400, show=True, pos=(20, 720))
+        if logger:
+            self.logz = logger.mvLogger(self.log_win)
+        dpg.add_window(label="Results", tag="ResultsWindow", width=1000, height=600, show=False)
+
+        cb_map = {
+            "file_dialog_vcf": self.callback_vcf,
+            "file_dialog_variants": self.callback_variants,
+            "file_dialog_pheno": self.callback_pheno,
+            "file_dialog_cov": self.callback_cov,
+            "file_dialog_bed": self.callback_bed,
+            "file_dialog_blacklist": self.callback_blacklist,
+            "file_dialog_fasta": self.callback_fasta,
+            "file_dialog_bam": self.callback_bam,
+            "file_dialog_bam_vc": self.callback_bam_vc,
+            "file_dialog_bamlist": self.callback_bamlist_vc,
+            "select_directory": self.callback_save_results,
+        }
+        for tag, fn in cb_map.items():
+            if dpg.does_item_exist(tag):
+                dpg.set_item_callback(tag, fn)
+
+        # hide all pages first
+        for tag in self._pages.values():
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, show=False)
+
+        # default page
+        self.show_page("pre_sam")
+
+        self.apply_component_themes()
+        self._check_cli_versions()
+
+    # ----------- nav helpers -----------
+    def _nav_click(self, sender, app_data, user_data):
+        key = user_data
+        self.add_log(f"[NAV] Button clicked -> '{key}'")
+        self.show_page(key)
+
+    def _get_alias(self, item_id):
+        try:
+            return dpg.get_item_alias(item_id)
+        except Exception:
+            try:
+                info = dpg.get_item_info(item_id)
+                return info.get("alias")
+            except Exception:
+                return None
+
+    def _index_pages_from_ui(self):
+        try:
+            children = dpg.get_item_children("content_area", 1) or []
+        except Exception:
+            children = []
+        found = {}
+        for ch in children:
+            alias = self._get_alias(ch)
+            if not alias:
+                continue
+            if alias.startswith("page_"):
+                key = alias[5:]
+                found[key] = alias
+        for k, v in found.items():
+            self._pages.setdefault(k, v)
+
+    # ---------------- dialogs ----------------
+    def _build_file_dialogs(self):
+        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
                              file_count=3, tag="file_dialog_vcf", width=920, height=560,
                              default_path=self.default_path, modal=True):
             dpg.add_file_extension("Source files (*.vcf *.gz){.vcf,.gz}", color=(255, 255, 0, 255))
         self._file_dialogs.append("file_dialog_vcf")
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_variants,
+        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
                              file_count=3, tag="file_dialog_variants", width=920, height=560,
                              default_path=self.default_path, modal=True):
             dpg.add_file_extension("Text files (*.txt *.csv){.txt,.csv}", color=(255, 255, 0, 255))
             dpg.add_file_extension(".*")
         self._file_dialogs.append("file_dialog_variants")
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_pheno,
+        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
                              file_count=3, tag="file_dialog_pheno", width=920, height=560,
                              default_path=self.default_path, modal=True):
             dpg.add_file_extension("Text files (*.txt *.csv){.txt,.csv}", color=(255, 255, 0, 255))
             dpg.add_file_extension(".*")
         self._file_dialogs.append("file_dialog_pheno")
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_cov,
+        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
                              file_count=3, tag="file_dialog_cov", width=920, height=560,
                              default_path=self.default_path, modal=True):
             dpg.add_file_extension("Text files (*.txt *.csv){.txt,.csv}", color=(255, 255, 0, 255))
             dpg.add_file_extension(".*")
         self._file_dialogs.append("file_dialog_cov")
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_bed,
+        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
                              file_count=3, tag="file_dialog_bed", width=920, height=560,
                              default_path=self.default_path, modal=True):
             dpg.add_file_extension(".bed", color=(255, 150, 150, 255))
             dpg.add_file_extension(".*")
         self._file_dialogs.append("file_dialog_bed")
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_blacklist,
+        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
                              file_count=1, tag="file_dialog_blacklist", width=920, height=560,
                              default_path=self.default_path, modal=True):
             dpg.add_file_extension(".bed", color=(255, 200, 150, 255))
             dpg.add_file_extension(".*")
         self._file_dialogs.append("file_dialog_blacklist")
 
-        # FASTA for bcftools/variant calling
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_fasta,
+        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
                              file_count=1, tag="file_dialog_fasta", width=920, height=560,
                              default_path=self.default_path, modal=True):
             dpg.add_file_extension("Reference (*.fa *.fasta *.fa.gz){.fa,.fasta,.fa.gz}", color=(150, 200, 255, 255))
         self._file_dialogs.append("file_dialog_fasta")
 
-        # BAM for preprocess
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_bam,
+        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
                              file_count=1, tag="file_dialog_bam", width=920, height=560,
                              default_path=self.default_path, modal=True):
             dpg.add_file_extension(".bam", color=(255, 180, 120, 255))
             dpg.add_file_extension(".*")
         self._file_dialogs.append("file_dialog_bam")
 
-        # BAM (single) for variant calling
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_bam_vc,
+        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
                              file_count=1, tag="file_dialog_bam_vc", width=920, height=560,
                              default_path=self.default_path, modal=True):
             dpg.add_file_extension(".bam", color=(255, 180, 120, 255))
             dpg.add_file_extension(".*")
         self._file_dialogs.append("file_dialog_bam_vc")
 
-        # BAM list for variant calling
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.callback_bamlist_vc,
+        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
                              file_count=1, tag="file_dialog_bamlist", width=920, height=560,
                              default_path=self.default_path, modal=True):
             dpg.add_file_extension("BAM list (*.list){.list}", color=(255, 230, 140, 255))
             dpg.add_file_extension(".*")
         self._file_dialogs.append("file_dialog_bamlist")
 
-        dpg.add_file_dialog(directory_selector=True, show=False, callback=self.callback_save_results,
+        dpg.add_file_dialog(directory_selector=True, show=False, callback=None,
                             tag="select_directory", cancel_callback=self.cancel_callback_directory,
                             width=900, height=540, default_path=self.default_path, modal=True)
         self._file_dialogs.append("select_directory")
 
-        # Main window
-        with dpg.window(label="PlantVarFilter", tag="MainWindow", no_close=True, width=1100, height=700):
-            self.build_header(parent="MainWindow")
-
-            dpg.add_spacer(height=4)
-            dpg.add_separator()
-            dpg.add_spacer(height=6)
-
-            dpg.add_tab_bar(tag="main_tabbar")
-
-            # —— Preprocess (samtools) ——
-            with dpg.tab(label='Preprocess (samtools)', parent="main_tabbar"):
-                dpg.add_text("\nClean BAM: sort / fixmate / markdup / index + QC reports", indent=10)
-                dpg.add_spacer(height=10)
-                with dpg.group(horizontal=True, horizontal_spacing=60):
-                    with dpg.group():
-                        bam_btn = dpg.add_button(
-                            label="Choose a BAM file",
-                            callback=lambda: dpg.show_item("file_dialog_bam"),
-                            width=220, tag='tooltip_bam_sam'
-                        )
-                        self._secondary_buttons.append(bam_btn)
-                        dpg.add_text("", tag="sam_bam_path_lbl", wrap=500)
-
-                    with dpg.group():
-                        self.sam_threads = dpg.add_input_int(
-                            label="Threads", width=220, default_value=4, min_value=1, min_clamped=True
-                        )
-                        self._inputs.append(self.sam_threads)
-                        self.sam_remove_dups = dpg.add_checkbox(
-                            label="Remove duplicates (instead of marking)", default_value=False
-                        )
-                        self._inputs.append(self.sam_remove_dups)
-                        self.sam_compute_stats = dpg.add_checkbox(
-                            label="Compute QC reports (flagstat/stats/idxstats/depth)", default_value=True
-                        )
-                        self._inputs.append(self.sam_compute_stats)
-
-                        dpg.add_spacer(height=6)
-                        self.sam_out_prefix = dpg.add_input_text(
-                            label="Output prefix (optional)",
-                            hint="Leave empty to auto-generate next to the input file",
-                            width=320
-                        )
-                        self._inputs.append(self.sam_out_prefix)
-
-                        dpg.add_spacer(height=12)
-                        run_sam = dpg.add_button(
-                            label="Run samtools preprocess",
-                            callback=self.run_samtools_preprocess,
-                            width=240, height=38
-                        )
-                        self._primary_buttons.append(run_sam)
-
-            # —— Variant Calling (BAM → VCF) ——
-            with dpg.tab(label='Variant Calling (BAM→VCF)', parent="main_tabbar"):
-                dpg.add_text("\nCall variants with bcftools mpileup + call", indent=10)
-                dpg.add_spacer(height=10)
-                with dpg.group(horizontal=True, horizontal_spacing=60):
-
-                    with dpg.group():
-                        b1 = dpg.add_button(
-                            label="Choose BAM (single)",
-                            callback=lambda: dpg.show_item("file_dialog_bam_vc"),
-                            width=220, tag='tooltip_bam_vc'
-                        )
-                        self._secondary_buttons.append(b1)
-                        dpg.add_text("", tag="vc_bam_path_lbl", wrap=500)
-
-                        dpg.add_spacer(height=6)
-                        b2 = dpg.add_button(
-                            label="Choose BAM-list (.list)",
-                            callback=lambda: dpg.show_item("file_dialog_bamlist"),
-                            width=220, tag='tooltip_bamlist_vc'
-                        )
-                        self._secondary_buttons.append(b2)
-                        dpg.add_text("", tag="vc_bamlist_path_lbl", wrap=500)
-
-                        dpg.add_spacer(height=6)
-                        fa_btn = dpg.add_button(
-                            label="Choose reference FASTA",
-                            callback=lambda: dpg.show_item("file_dialog_fasta"),
-                            width=220, tag='tooltip_fa_vc'
-                        )
-                        self._secondary_buttons.append(fa_btn)
-                        dpg.add_text("", tag="vc_ref_path_lbl", wrap=500)
-
-                        dpg.add_spacer(height=6)
-                        reg_btn2 = dpg.add_button(
-                            label="Choose regions BED (optional)",
-                            callback=lambda: dpg.show_item("file_dialog_blacklist"),
-                            width=220, tag='tooltip_reg_vc'
-                        )
-                        self._secondary_buttons.append(reg_btn2)
-                        dpg.add_text("", tag="vc_regions_path_lbl", wrap=500)
-
-                    with dpg.group():
-                        self.vc_threads = dpg.add_input_int(label="Threads", width=220, default_value=4, min_value=1, min_clamped=True)
-                        self._inputs.append(self.vc_threads)
-                        self.vc_ploidy = dpg.add_input_int(label="Ploidy", width=220, default_value=2, min_value=1, min_clamped=True, tag='tooltip_ploidy')
-                        self._inputs.append(self.vc_ploidy)
-                        self.vc_min_bq = dpg.add_input_int(label="Min BaseQ", width=220, default_value=20, min_value=0, min_clamped=True, tag='tooltip_bq')
-                        self._inputs.append(self.vc_min_bq)
-                        self.vc_min_mq = dpg.add_input_int(label="Min MapQ", width=220, default_value=20, min_value=0, min_clamped=True, tag='tooltip_mq')
-                        self._inputs.append(self.vc_min_mq)
-
-                        dpg.add_spacer(height=6)
-                        self.vc_out_prefix = dpg.add_input_text(
-                            label="Output prefix (optional)",
-                            hint="Leave empty to auto-generate next to the BAM",
-                            width=320
-                        )
-                        self._inputs.append(self.vc_out_prefix)
-
-                        dpg.add_spacer(height=12)
-                        run_vc = dpg.add_button(
-                            label="Call variants (bcftools)",
-                            callback=self.run_variant_calling,
-                            width=240, height=38
-                        )
-                        self._primary_buttons.append(run_vc)
-
-            # —— Preprocess (bcftools) ——
-            with dpg.tab(label='Preprocess (bcftools)', parent="main_tabbar"):
-                dpg.add_text("\nNormalize / split multiallelic / sort / filter / set IDs (bcftools)", indent=10)
-                dpg.add_spacer(height=10)
-                with dpg.group(horizontal=True, horizontal_spacing=60):
-
-                    with dpg.group():
-                        vcf_btn_bcf = dpg.add_button(
-                            label="Choose a VCF file",
-                            callback=lambda: dpg.show_item("file_dialog_vcf"),
-                            width=220, tag='tooltip_vcf_bcf'
-                        )
-                        self._secondary_buttons.append(vcf_btn_bcf)
-                        dpg.add_text("", tag="bcf_vcf_path_lbl", wrap=500)
-
-                        dpg.add_spacer(height=6)
-                        fasta_btn = dpg.add_button(
-                            label="Choose reference FASTA (for left-align)",
-                            callback=lambda: dpg.show_item("file_dialog_fasta"),
-                            width=220, tag='tooltip_fa_bcf'
-                        )
-                        self._secondary_buttons.append(fasta_btn)
-                        dpg.add_text("", tag="bcf_ref_path_lbl", wrap=500)
-
-                        dpg.add_spacer(height=6)
-                        reg_btn = dpg.add_button(
-                            label="Choose regions BED (optional)",
-                            callback=lambda: dpg.show_item("file_dialog_blacklist"),
-                            width=220, tag='tooltip_reg_bcf'
-                        )
-                        self._secondary_buttons.append(reg_btn)
-                        dpg.add_text("", tag="bcf_regions_path_lbl", wrap=500)
-
-                    with dpg.group():
-                        self.bcf_split = dpg.add_checkbox(label="Split multiallelic", default_value=True)
-                        self._inputs.append(self.bcf_split)
-                        self.bcf_left  = dpg.add_checkbox(label="Left-align indels (needs FASTA)", default_value=True)
-                        self._inputs.append(self.bcf_left)
-                        self.bcf_sort  = dpg.add_checkbox(label="Sort", default_value=True)
-                        self._inputs.append(self.bcf_sort)
-                        self.bcf_setid = dpg.add_checkbox(label="Set ID to CHR:POS:REF:ALT", default_value=True)
-                        self._inputs.append(self.bcf_setid)
-                        self.bcf_compr = dpg.add_checkbox(label="Compress output (.vcf.gz)", default_value=True)
-                        self._inputs.append(self.bcf_compr)
-                        self.bcf_index = dpg.add_checkbox(label="Index output (tabix)", default_value=True)
-                        self._inputs.append(self.bcf_index)
-                        self.bcf_rmflt = dpg.add_checkbox(label="Keep only PASS (remove filtered)", default_value=False)
-                        self._inputs.append(self.bcf_rmflt)
-
-                        dpg.add_spacer(height=6)
-                        self.bcf_filter_expr = dpg.add_input_text(
-                            label="bcftools filter expression (optional)",
-                            hint="Example: QUAL>=30 && INFO/DP>=10",
-                            width=320
-                        )
-                        self._inputs.append(self.bcf_filter_expr)
-
-                        dpg.add_spacer(height=6)
-                        self.bcf_out_prefix = dpg.add_input_text(
-                            label="Output prefix (optional)",
-                            hint="Leave empty to auto-generate next to the input file",
-                            width=320
-                        )
-                        self._inputs.append(self.bcf_out_prefix)
-
-                        dpg.add_spacer(height=12)
-                        run_bcf = dpg.add_button(
-                            label="Run bcftools preprocess",
-                            callback=self.run_bcftools_preprocess,
-                            width=240, height=38
-                        )
-                        self._primary_buttons.append(run_bcf)
-
-            # —— Check VCF File (QC) ——
-            with dpg.tab(label='Check VCF File', parent="main_tabbar"):
-                dpg.add_text("\nCheck VCF quality before conversion/analysis", indent=10)
-                dpg.add_spacer(height=10)
-                with dpg.group(horizontal=True, horizontal_spacing=60):
-                    with dpg.group():
-                        vcf_btn_qc = dpg.add_button(
-                            label="Choose a VCF file",
-                            callback=lambda: dpg.show_item("file_dialog_vcf"),
-                            width=220, tag='tooltip_vcf_qc'
-                        )
-                        self._secondary_buttons.append(vcf_btn_qc)
-                        dpg.add_text("", tag="qc_vcf_path_lbl", wrap=500)
-
-                        dpg.add_spacer(height=6)
-                        bl_btn = dpg.add_button(
-                            label="Choose blacklist BED (optional)",
-                            callback=lambda: dpg.show_item("file_dialog_blacklist"),
-                            width=220, tag='tooltip_bl_qc'
-                        )
-                        self._secondary_buttons.append(bl_btn)
-                        dpg.add_text("", tag="qc_bl_path_lbl", wrap=500)
-
-                    with dpg.group():
-                        self.deep_scan = dpg.add_checkbox(label="Deep scan", default_value=False)
-                        self._inputs.append(self.deep_scan)
-                        dpg.add_spacer(height=12)
-                        run_qc_btn = dpg.add_button(
-                            label="Run Quality Check",
-                            callback=self.run_vcf_qc,
-                            width=200, height=36
-                        )
-                        self._primary_buttons.append(run_qc_btn)
-
-            # —— Convert to PLINK ——
-            with dpg.tab(label='Convert to PLINK', parent="main_tabbar"):
-                dpg.add_text("\nConvert a VCF file into PLINK BED and apply MAF/missing genotype filters.", indent=10)
-                dpg.add_spacer(height=10)
-                with dpg.group(horizontal=True, horizontal_spacing=60):
-                    with dpg.group():
-                        dpg.add_text("Select files:", indent=0)
-                        vcf = dpg.add_button(
-                            label="Choose a VCF file",
-                            callback=lambda: dpg.show_item("file_dialog_vcf"),
-                            width=220, tag='tooltip_vcf'
-                        )
-                        self._secondary_buttons.append(vcf)
-                        dpg.add_text("", tag="conv_vcf_path_lbl", wrap=500)
-
-                        dpg.add_spacer(height=6)
-                        variant_ids = dpg.add_button(
-                            label="Choose IDs file (option)",
-                            callback=lambda: dpg.show_item("file_dialog_variants"),
-                            width=220, tag='tooltip_variant'
-                        )
-                        self._secondary_buttons.append(variant_ids)
-                        dpg.add_text("", tag="ids_path_lbl", wrap=500)
-
-                    with dpg.group():
-                        dpg.add_text("Apply filters:", indent=0)
-                        maf_input = dpg.add_input_float(
-                            label="Minor allele frequency (MAF)",
-                            width=220, default_value=0.05, step=0.005, tag='tooltip_maf'
-                        )
-                        self._inputs.append(maf_input)
-
-                        dpg.add_spacer(height=6)
-                        geno_input = dpg.add_input_float(
-                            label="Missing genotype rate",
-                            width=220, default_value=0.10, step=0.005, tag='tooltip_missing'
-                        )
-                        self._inputs.append(geno_input)
-
-                        dpg.add_spacer(height=14)
-                        convert_btn = dpg.add_button(
-                            label="Convert VCF",
-                            callback=self.convert_vcf,
-                            user_data=[maf_input, geno_input, vcf, variant_ids],
-                            width=160, height=36
-                        )
-                        self._primary_buttons.append(convert_btn)
-
-            # —— GWAS Analysis ——
-            with dpg.tab(label='GWAS Analysis', parent="main_tabbar"):
-                dpg.add_text("\nStart GWAS Analysis", indent=10)
-                dpg.add_spacer(height=10)
-                with dpg.group(horizontal=True, horizontal_spacing=60):
-                    with dpg.group():
-                        geno = dpg.add_button(label="Choose a BED file",
-                                              callback=lambda: dpg.show_item("file_dialog_bed"),
-                                              width=220, tag='tooltip_bed')
-                        self._secondary_buttons.append(geno)
-                        dpg.add_text("", tag="gwas_bed_path_lbl", wrap=500)
-
-                        dpg.add_spacer(height=6)
-                        pheno = dpg.add_button(label="Choose a phenotype file",
-                                               callback=lambda: dpg.show_item("file_dialog_pheno"),
-                                               width=220, tag='tooltip_pheno')
-                        self._secondary_buttons.append(pheno)
-                        dpg.add_text("", tag="gwas_pheno_path_lbl", wrap=500)
-
-                        dpg.add_spacer(height=6)
-                        cov_file = dpg.add_button(label="Choose covariate file (option)",
-                                                  callback=lambda: dpg.show_item("file_dialog_cov"),
-                                                  width=220, tag='tooltip_cov')
-                        self._secondary_buttons.append(cov_file)
-                        dpg.add_text("", tag="gwas_cov_path_lbl", wrap=500)
-
-                    with dpg.group():
-                        self.gwas_combo = dpg.add_combo(
-                            label="Analysis Algorithms",
-                            items=["FaST-LMM", "Linear regression", "Ridge Regression",
-                                   "Random Forest (AI)", "XGBoost (AI)"],
-                            width=240, default_value="FaST-LMM", tag='tooltip_algorithm'
-                        )
-                        self._inputs.append(self.gwas_combo)
-
-                        dpg.add_spacer(height=14)
-                        gwas_btn = dpg.add_button(
-                            label="Run GWAS", callback=self.run_gwas,
-                            user_data=[geno, pheno], width=180, height=36
-                        )
-                        self._primary_buttons.append(gwas_btn)
-
-            # —— Genomic Prediction ——
-            with dpg.tab(label='Genomic Prediction', parent="main_tabbar"):
-                dpg.add_text("\nStart Genomic Prediction", indent=10)
-                dpg.add_spacer(height=10)
-                with dpg.group(horizontal=True, horizontal_spacing=60):
-                    with dpg.group():
-                        geno = dpg.add_button(label="Choose a BED file",
-                                              callback=lambda: dpg.show_item("file_dialog_bed"),
-                                              width=220, tag='tooltip_bed_gp')
-                        self._secondary_buttons.append(geno)
-                        dpg.add_text("", tag="gp_bed_path_lbl", wrap=500)
-
-                        dpg.add_spacer(height=6)
-                        pheno = dpg.add_button(label="Choose a phenotype file",
-                                               callback=lambda: dpg.show_item("file_dialog_pheno"),
-                                               width=220, tag='tooltip_pheno_gp')
-                        self._secondary_buttons.append(pheno)
-                        dpg.add_text("", tag="gp_pheno_path_lbl", wrap=500)
-
-                    with dpg.group():
-                        self.gwas_gp = dpg.add_combo(
-                            label="Analysis Algorithms",
-                            items=["XGBoost (AI)", "Random Forest (AI)",
-                                   "Ridge Regression", "GP_LMM", "val"],
-                            width=240, default_value="XGBoost (AI)", tag='tooltip_algorithm_gp'
-                        )
-                        self._inputs.append(self.gwas_gp)
-
-                        dpg.add_spacer(height=14)
-                        gp_btn = dpg.add_button(
-                            label="Run Genomic Prediction", callback=self.run_genomic_prediction,
-                            user_data=[geno, pheno], width=220, height=36
-                        )
-                        self._primary_buttons.append(gp_btn)
-
-            # —— Settings ——
-            with dpg.tab(label='Settings', parent="main_tabbar"):
-                dpg.add_spacer(height=10)
-                with dpg.table(header_row=False, borders_innerH=False, borders_outerH=False,
-                               borders_innerV=False, borders_outerV=False, resizable=False):
-                    dpg.add_table_column()
-                    dpg.add_table_column()
-                    with dpg.table_row():
-                        with dpg.group():
-                            dpg.add_text("General Settings", color=(200, 180, 90))
-                            dpg.add_spacer(height=8)
-                            self.night_toggle = dpg.add_checkbox(
-                                label="Night Mode (Dark)", default_value=True, callback=self.toggle_theme
-                            )
-                            dpg.add_spacer(height=6)
-                            self.nr_jobs = dpg.add_input_int(
-                                label="Number of jobs to run", width=220,
-                                default_value=-1, step=1, min_value=-1, max_value=50,
-                                min_clamped=True, max_clamped=True, tag="tooltip_nr_jobs"
-                            )
-                            self._inputs.append(self.nr_jobs)
-                            self.gb_goal = dpg.add_input_int(
-                                label="Gigabytes of memory per run", width=220,
-                                default_value=0, step=4, min_value=0, max_value=512,
-                                min_clamped=True, max_clamped=True, tag="tooltip_gb_goal"
-                            )
-                            self._inputs.append(self.gb_goal)
-                            self.plot_stats = dpg.add_checkbox(
-                                label="Advanced Plotting", default_value=False, tag="tooltip_stats"
-                            )
-                            self.snp_limit = dpg.add_input_text(
-                                label="SNP limit", width=220, default_value='', tag="tooltip_limit"
-                            )
-                            self._inputs.append(self.snp_limit)
-
-                        with dpg.group():
-                            dpg.add_text("Machine Learning Settings", color=(200, 180, 90))
-                            dpg.add_spacer(height=8)
-                            self.train_size_set = dpg.add_input_int(
-                                label="Training size %", width=220, default_value=70, step=10,
-                                min_value=0, max_value=100, min_clamped=True, max_clamped=True,
-                                tag="tooltip_training"
-                            )
-                            self._inputs.append(self.train_size_set)
-                            self.estim_set = dpg.add_input_int(
-                                label="Number of trees", width=220, default_value=200, step=10,
-                                min_value=1, min_clamped=True, tag="tooltip_trees"
-                            )
-                            self._inputs.append(self.estim_set)
-                            self.max_dep_set = dpg.add_input_int(
-                                label="Max depth", width=220, default_value=3, step=10,
-                                min_value=0, max_value=100, min_clamped=True, max_clamped=True, tag="tooltip_depth"
-                            )
-                            self._inputs.append(self.max_dep_set)
-                            self.model_nr = dpg.add_input_int(
-                                label="Nr. of models", width=220, default_value=1, step=1,
-                                min_value=1, max_value=50, min_clamped=True, max_clamped=True, tag="tooltip_model"
-                            )
-                            self._inputs.append(self.model_nr)
-                            self.aggregation_method = dpg.add_combo(
-                                ("sum", "median", "mean"),
-                                label="Aggregation Method", width=220, default_value='sum', tag="tooltip_aggr"
-                            )
-                            self._inputs.append(self.aggregation_method)
-
-        # Log + Results windows
-        self.log_win = dpg.add_window(label="Log", tag="LogWindow", width=800, height=400)
-        self.logz = logger.mvLogger(self.log_win)
-        dpg.add_window(label="Results", tag="ResultsWindow", width=1000, height=600, show=False)
-
-        # Tooltips
-        with dpg.tooltip("tooltip_vcf"):
-            dpg.add_text("Select a Variant Call Format file (.vcf or .vcf.gz).", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_variant"):
-            dpg.add_text("Optional sample IDs list (PLINK --keep): FID IID (space-separated).", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_maf"):
-            dpg.add_text("Minor Allele Frequency threshold.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_missing"):
-            dpg.add_text("Maximum allowed missing genotype rate per variant.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_bed"):
-            dpg.add_text("Select a PLINK .bed file (needs .bim and .fam).", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_pheno"):
-            dpg.add_text("Phenotype file: FID IID Value (no header).", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_cov"):
-            dpg.add_text("Covariates file: FID IID <cov1> <cov2> ...", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_algorithm"):
-            dpg.add_text("Select the algorithm to use for analysis.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_algorithm_gp"):
-            dpg.add_text("Select the algorithm for genomic prediction.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_training"):
-            dpg.add_text("Percent of data used for training.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_trees"):
-            dpg.add_text("Number of trees (RF/XGB).", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_model"):
-            dpg.add_text("Number of models for aggregation.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_depth"):
-            dpg.add_text("Maximum tree depth.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_nr_jobs"):
-            dpg.add_text("CPU cores (-1 = use all cores).", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_gb_goal"):
-            dpg.add_text("Target GB of RAM per run. 0 = block-wise reading.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_limit"):
-            dpg.add_text("Limit SNPs in plots on huge datasets. Empty = all.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_stats"):
-            dpg.add_text("Enable advanced PDF plots for pheno/geno stats.", color=[79, 128, 90])
-
-        # samtools tooltip
-        with dpg.tooltip("tooltip_bam_sam"):
-            dpg.add_text("Select input BAM to clean and index.", color=[79, 128, 90])
-
-        # variant calling tooltips
-        with dpg.tooltip("tooltip_bam_vc"):
-            dpg.add_text("Single sample BAM for calling.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_bamlist_vc"):
-            dpg.add_text("Text file with one BAM per line (-b list) for joint calling.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_fa_vc"):
-            dpg.add_text("Reference FASTA (must be indexed .fai).", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_reg_vc"):
-            dpg.add_text("Optional BED of regions to restrict calling.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_ploidy"):
-            dpg.add_text("Assumed ploidy used by bcftools call.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_bq"):
-            dpg.add_text("Minimum base quality for mpileup.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_mq"):
-            dpg.add_text("Minimum mapping quality for mpileup.", color=[79, 128, 90])
-
-        # bcftools tooltips
-        with dpg.tooltip("tooltip_vcf_bcf"):
-            dpg.add_text("Select input VCF/VCF.GZ to preprocess.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_fa_bcf"):
-            dpg.add_text("Reference FASTA is required for accurate left alignment in bcftools norm.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_reg_bcf"):
-            dpg.add_text("Regions BED to include (bcftools view -R). Optional.", color=[79, 128, 90])
-
-        with dpg.tooltip("tooltip_vcf_qc"):
-            dpg.add_text("Select a VCF/VCF.GZ file to evaluate.", color=[79, 128, 90])
-        with dpg.tooltip("tooltip_bl_qc"):
-            dpg.add_text("Optional BED of low-mappability/blacklist regions.", color=[79, 128, 90])
-
-        self.apply_component_themes()
-
-    # ——— Header ———
-    def build_header(self, parent):
-        if self.header_group and dpg.does_item_exist(self.header_group):
-            dpg.delete_item(self.header_group)
-
-        with dpg.group(horizontal=True, parent=parent) as self.header_group:
+    # ---------------- header ----------------
+    def _build_header(self, parent, big: bool = False):
+        with dpg.group(parent=parent, horizontal=True, horizontal_spacing=8):
             logo_path = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
             if os.path.exists(logo_path):
                 w, h, c, data = dpg.load_image(logo_path)
                 if not dpg.does_item_exist("plant_logo_tex"):
                     with dpg.texture_registry(show=False):
                         dpg.add_static_texture(width=w, height=h, default_value=data, tag="plant_logo_tex")
-                dpg.add_image("plant_logo_tex", width=48, height=48)
+                dpg.add_image("plant_logo_tex", width=40 if not big else 52, height=40 if not big else 52)
             else:
-                self.logo_draw = dpg.add_drawlist(width=48, height=48)
+                dl = dpg.add_drawlist(width=40 if not big else 52, height=40 if not big else 52)
+                dpg.draw_circle(center=(20 if not big else 26, 20 if not big else 26),
+                                radius=18 if not big else 24,
+                                color=(76, 175, 110, 255), thickness=2, parent=dl)
 
-            self.brand_title = dpg.add_text("PlantVarFilter")
-            self.brand_tagline = dpg.add_text("Software for GWAS Analysis")
+            dpg.add_text("PlantVarFilter", color=(210, 230, 210) if self.night_mode else (30, 45, 35))
+            if big:
+                dpg.add_spacer(width=10)
+                dpg.add_text("GWAS, Genomic Prediction, and VCF Utilities",
+                             color=(190, 175, 95) if self.night_mode else (90, 120, 70))
 
-    def header_palette(self):
-        if self.night_mode:
-            return {
-                "ring": (34, 70, 52, 255),
-                "leaf": (76, 175, 110, 255),
-                "vein": (230, 245, 235, 220),
-                "title": (210, 230, 210),
-                "tagline": (190, 175, 95)
-            }
+    # ---------------- navigation ----------------
+    def _bind_nav_button_theme(self, btn, active: bool):
+        try:
+            dpg.bind_item_theme(btn, get_primary_button_theme_tag() if active else "theme_button_secondary")
+        except Exception:
+            pass
+
+    def show_page(self, key: str):
+        if not self._pages or key not in self._pages:
+            self._index_pages_from_ui()
+            if key not in self._pages:
+                fallback = f"page_{key}"
+                if dpg.does_item_exist(fallback):
+                    self._pages[key] = fallback
+                    self.add_log(f"[NAV] Using fallback for '{key}' -> '{fallback}'")
+                else:
+                    self.add_log(f"[NAV] Page '{key}' not found. Available: {list(self._pages.keys())}", error=True)
+                    return
+
+        self.add_log(f"[NAV] Switching to page '{key}'")
+        for k, page_tag in self._pages.items():
+            if dpg.does_item_exist(page_tag):
+                dpg.configure_item(page_tag, show=(k == key))
+        self._active_key = key
+        for k, btn in self._nav_buttons.items():
+            self._bind_nav_button_theme(btn, active=(k == key))
+
+        # refresh watermark after page switch
+        self._refresh_watermark()
+
+    # ---------------- tooltips ----------------
+    def _build_tooltips(self):
+        tooltip_pairs = [
+            ("tooltip_vcf", "Select a Variant Call Format file (.vcf or .vcf.gz)."),
+            ("tooltip_variant", "Optional sample IDs list (PLINK --keep): FID IID (space-separated)."),
+            ("tooltip_maf", "Minor Allele Frequency threshold."),
+            ("tooltip_missing", "Maximum allowed missing genotype rate per variant."),
+            ("tooltip_bed", "Select a PLINK .bed file (needs .bim and .fam)."),
+            ("tooltip_pheno", "Phenotype file: FID IID Value (no header)."),
+            ("tooltip_cov", "Covariates file: FID IID <cov1> <cov2> ..."),
+            ("tooltip_algorithm", "Select the algorithm to use for analysis."),
+            ("tooltip_algorithm_gp", "Select the algorithm for genomic prediction."),
+            ("tooltip_training", "Percent of data used for training."),
+            ("tooltip_trees", "Number of trees (RF/XGB)."),
+            ("tooltip_model", "Number of models for aggregation."),
+            ("tooltip_depth", "Maximum tree depth."),
+            ("tooltip_nr_jobs", "CPU cores (-1 = use all cores)."),
+            ("tooltip_gb_goal", "Target GB of RAM per run. 0 = block-wise reading."),
+            ("tooltip_limit", "Limit SNPs in plots on huge datasets. Empty = all."),
+            ("tooltip_stats", "Enable advanced PDF plots for pheno/geno stats."),
+            ("tooltip_bam_sam", "Select input BAM to clean and index."),
+            ("tooltip_bam_vc", "Single sample BAM for calling."),
+            ("tooltip_bamlist_vc", "Text file with one BAM per line (-b list) for joint calling."),
+            ("tooltip_fa_vc", "Reference FASTA (must be indexed .fai)."),
+            ("tooltip_reg_vc", "Optional BED of regions to restrict calling."),
+            ("tooltip_vcf_bcf", "Select input VCF/VCF.GZ to preprocess."),
+            ("tooltip_fa_bcf", "Reference FASTA is required for accurate left alignment in bcftools norm."),
+            ("tooltip_reg_bcf", "Regions BED to include (bcftools view -R). Optional."),
+            ("tooltip_vcf_qc", "Select a VCF/VCF.GZ file to evaluate."),
+            ("tooltip_bl_qc", "Optional BED of low-mappability/blacklist regions."),
+        ]
+        for tag, txt in tooltip_pairs:
+            if dpg.does_item_exist(tag):
+                with dpg.tooltip(tag):
+                    dpg.add_text(txt, color=[79, 128, 90])
+
+    # ---------------- lifecycle ----------------
+    def run(self):
+        dpg.create_context()
+        try:
+            self.setup_gui()
+            dpg.create_viewport(title="PlantVarFilter", width=1600, height=1000, resizable=True)
+            dpg.setup_dearpygui()
+            dpg.show_viewport()
+
+            # initial watermark + ensure refresh after first frame
+            self._refresh_watermark()
+            try:
+                dpg.set_frame_callback(1, lambda: self._refresh_watermark())
+            except Exception:
+                pass
+
+            self._hook_viewport_resize()
+            self._on_viewport_resize(None, None)
+            dpg.start_dearpygui()
+        finally:
+            dpg.destroy_context()
+
+    def _hook_viewport_resize(self):
+        if hasattr(dpg, "add_viewport_resize_handler"):
+            with dpg.handler_registry():
+                dpg.add_viewport_resize_handler(callback=self._on_viewport_resize)
+        elif hasattr(dpg, "set_viewport_resize_callback"):
+            dpg.set_viewport_resize_callback(self._on_viewport_resize)
+
+    def _on_viewport_resize(self, sender, app_data):
+        if dpg.does_item_exist("PrimaryWindow"):
+            dpg.set_item_width("PrimaryWindow", dpg.get_viewport_client_width())
+            dpg.set_item_height("PrimaryWindow", dpg.get_viewport_client_height())
+        self._refresh_watermark()
+
+    # ---- watermark helper ----
+    def _refresh_watermark(self):
+        try:
+            if not dpg.does_item_exist("content_area"):
+                return
+
+            from ui.watermark import setup as setup_watermark
+
+            # draw after one frame so the layout/rects are valid
+            def _do():
+                try:
+                    setup_watermark(
+                        alpha=self._wm_alpha,
+                        scale=self._wm_scale,
+                        target_window_tag="content_area",
+                        front=True,  # set False if you want it behind everything
+                    )
+                except Exception as ex:
+                    self.add_log(f"[wm] draw failed: {ex}", warn=True)
+
+            dpg.set_frame_callback(dpg.get_frame_count() + 1, _do)
+
+        except Exception as e:
+            self.add_log(f"[wm] refresh failed: {e}", warn=True)
+
+    # -------- settings callbacks --------
+    def _on_font_scale_change(self, sender, value):
+        try:
+            val = float(value)
+        except Exception:
+            val = 1.0
+        set_font_scale(val)
+        self.add_log(f"[Theme] Font scale set to {val:.2f}")
+
+    def _on_accent_change(self, sender, value):
+        presets = {
+            "Evergreen (Green)": ((46, 125, 50), (67, 160, 71), (27, 94, 32)),
+            "Teal": ((0, 121, 107), (0, 150, 136), (0, 105, 97)),
+            "Blue": ((33, 105, 170), (54, 134, 204), (22, 78, 140)),
+            "Amber": ((221, 140, 20), (240, 170, 40), (190, 120, 10)),
+            "Purple": ((121, 82, 179), (150, 110, 210), (98, 60, 160)),
+        }
+        base, hov, act = presets.get(value, presets["Evergreen (Green)"])
+        set_accent_color(base, hov, act)
+        self.apply_component_themes()
+        self.add_log(f"[Theme] Accent set to: {value}")
+
+    # ---------------- misc helpers ----------------
+    def add_log(self, message, warn=False, error=False):
+        if self.logz:
+            if warn:
+                self.logz.log_warning(message)
+            elif error:
+                self.logz.log_error(message)
+            else:
+                self.logz.log_info(message)
         else:
-            return {
-                "ring": (190, 220, 200, 255),
-                "leaf": (72, 160, 100, 255),
-                "vein": (25, 50, 35, 200),
-                "title": (30, 45, 35),
-                "tagline": (90, 120, 70)
-            }
-
-    def redraw_header_icon_and_colors(self):
-        pal = self.header_palette()
-
-        if self.logo_draw and dpg.does_item_exist(self.logo_draw):
-            dpg.delete_item(self.logo_draw, children_only=True)
-            dpg.draw_circle(center=(24, 24), radius=22, color=pal["ring"], fill=(0, 0, 0, 0), parent=self.logo_draw, thickness=2)
-
-        if self.brand_title and dpg.does_item_exist(self.brand_title):
-            dpg.configure_item(self.brand_title, color=pal["title"])
-        if self.brand_tagline and dpg.does_item_exist(self.brand_tagline):
-            dpg.configure_item(self.brand_tagline, color=pal["tagline"])
-
-    # ——— Helpers ———
-    def apply_component_themes(self):
-        dpg.bind_theme(self.theme_plant_dark if self.night_mode else self.theme_plant_light)
-
-        primary = self.theme_primary_btn_dark if self.night_mode else self.theme_primary_btn_light
-        secondary = self.theme_secondary_btn_dark if self.night_mode else self.theme_secondary_btn_light
-        inputs = self.theme_inputs_dark if self.night_mode else self.theme_inputs_light
-        fd_theme = self.theme_fd_dark if self.night_mode else self.theme_fd_light
-
-        for b in self._primary_buttons:
-            if dpg.does_item_exist(b):
-                dpg.bind_item_theme(b, primary)
-        for b in self._secondary_buttons:
-            if dpg.does_item_exist(b):
-                dpg.bind_item_theme(b, secondary)
-        for it in self._inputs:
-            if dpg.does_item_exist(it):
-                dpg.bind_item_theme(it, inputs)
-        for t in self._file_dialogs:
-            if dpg.does_item_exist(t):
-                dpg.bind_item_theme(t, fd_theme)
-
-        self.redraw_header_icon_and_colors()
-
-        if self.font:
-            dpg.bind_font(self.font)
-        dpg.set_global_font_scale(0.62)
-
-    def _set_text(self, tag: str, value: str):
-        if dpg.does_item_exist(tag):
-            dpg.set_value(tag, value)
+            prefix = "[WARN]" if warn else "[ERROR]" if error else "[INFO]"
+            print(prefix, message)
 
     def _fmt_name(self, path: str) -> str:
         try:
@@ -929,11 +564,26 @@ class GWASApp:
         except Exception:
             return str(path)
 
+    def get_selection_path(self, app_data):
+        if not app_data:
+            return None, None
+        current_path = (app_data.get('current_path') or '') + '/'
+        sels = app_data.get('selections') or {}
+        file_path = None
+        for _, value in sels.items():
+            file_path = value
+            break
+        return file_path, current_path
+
     def _get_appdata_path_safe(self, app_data):
         try:
             return self.get_selection_path(app_data)[0]
         except Exception:
             return None
+
+    def _set_text(self, tag: str, value: str):
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, value)
 
     def _set_virtual_selection(self, attr_name: str, file_path: str):
         setattr(self, attr_name, {
@@ -941,7 +591,7 @@ class GWASApp:
             'selections': {'file': file_path}
         })
 
-    # ——— Callbacks (files) ———
+    # ---------------- callbacks: file dialogs ----------------
     def callback_vcf(self, s, app_data):
         self.vcf_app_data = app_data
         vcf_path, current_path = self.get_selection_path(self.vcf_app_data)
@@ -950,9 +600,8 @@ class GWASApp:
         dpg.configure_item("file_dialog_variants", default_path=current_path or self.default_path)
         self.add_log('VCF Selected: ' + vcf_path)
         name = self._fmt_name(vcf_path)
-        self._set_text("qc_vcf_path_lbl", name)
-        self._set_text("conv_vcf_path_lbl", name)
-        self._set_text("bcf_vcf_path_lbl", name)
+        for tag in ("qc_vcf_path_lbl", "conv_vcf_path_lbl", "bcf_vcf_path_lbl"):
+            self._set_text(tag, name)
 
     def callback_bed(self, s, app_data):
         self.bed_app_data = app_data
@@ -964,8 +613,8 @@ class GWASApp:
             dpg.configure_item("file_dialog_pheno", default_path=current_path or self.default_path)
             self.add_log('BED file Selected: ' + bed_path)
             name = self._fmt_name(bed_path)
-            self._set_text("gwas_bed_path_lbl", name)
-            self._set_text("gp_bed_path_lbl", name)
+            for tag in ("gwas_bed_path_lbl", "gp_bed_path_lbl"):
+                self._set_text(tag, name)
         except TypeError:
             self.add_log('Invalid BED file Selected', error=True)
 
@@ -988,8 +637,8 @@ class GWASApp:
             dpg.configure_item("file_dialog_bed", default_path=current_path or self.default_path)
             self.add_log('Pheno File Selected: ' + pheno_path)
             name = self._fmt_name(pheno_path)
-            self._set_text("gwas_pheno_path_lbl", name)
-            self._set_text("gp_pheno_path_lbl", name)
+            for tag in ("gwas_pheno_path_lbl", "gp_pheno_path_lbl"):
+                self._set_text(tag, name)
         except TypeError:
             self.add_log('Wrong Pheno File Selected', error=True)
 
@@ -1013,7 +662,6 @@ class GWASApp:
             if not bl_path:
                 return
             self.add_log('Blacklist/Regions BED Selected: ' + bl_path)
-            # update all places that show a regions BED
             for tag in ("qc_bl_path_lbl", "bcf_regions_path_lbl", "vc_regions_path_lbl"):
                 self._set_text(tag, self._fmt_name(bl_path))
         except TypeError:
@@ -1026,7 +674,6 @@ class GWASApp:
             if not fasta_path:
                 return
             self.add_log('FASTA Selected: ' + fasta_path)
-            # update both bcftools + variant calling labels if present
             for tag in ("bcf_ref_path_lbl", "vc_ref_path_lbl"):
                 self._set_text(tag, self._fmt_name(fasta_path))
         except TypeError:
@@ -1043,7 +690,6 @@ class GWASApp:
         except Exception:
             self.add_log('Invalid BAM file', error=True)
 
-    # variant calling callbacks
     def callback_bam_vc(self, s, app_data):
         self.bam_vc_app_data = app_data
         try:
@@ -1066,17 +712,6 @@ class GWASApp:
         except Exception:
             self.add_log('Invalid BAM-list file', error=True)
 
-    def get_selection_path(self, app_data):
-        if not app_data:
-            return None, None
-        current_path = (app_data.get('current_path') or '') + '/'
-        sels = app_data.get('selections') or {}
-        file_path = None
-        for _, value in sels.items():
-            file_path = value
-            break
-        return file_path, current_path
-
     def callback_save_results(self, s, app_data):
         self.results_directory = app_data
         results_path, current_path = self.get_selection_path(self.results_directory)
@@ -1095,50 +730,13 @@ class GWASApp:
     def cancel_callback_directory(self, s, app_data):
         self.add_log('Process Canceled')
 
-    # ——— QC plotting helpers ———
-    def _add_hist_plot(self, parent, title, values, bins=30, x_range=None,
-                       p10=None, p50=None, p90=None):
-        if not values:
-            with dpg.tab(label=title, parent=parent):
-                dpg.add_text("No data")
-            return
-
-        mn = min(values); mx = max(values)
-        if x_range:
-            mn, mx = x_range
-        if mx <= mn:
-            mx = mn + 1e-6
-
-        width = (mx - mn) / bins
-        counts = [0] * bins
-        for v in values:
-            if v < mn or v > mx:
-                continue
-            idx = min(bins - 1, int((v - mn) / (mx - mn) * bins))
-            counts[idx] += 1
-        centers = [mn + (i + 0.5) * width for i in range(bins)]
-
-        with dpg.tab(label=title, parent=parent):
-            with dpg.plot(label=title, height=380, width=720, anti_aliased=True):
-                x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="Value")
-                y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="Count")
-                dpg.add_bar_series(centers, counts, parent=y_axis, label="Histogram")
-
-                for val, lab in [(p10, "P10"), (p50, "P50"), (p90, "P90")]:
-                    if val is not None:
-                        try:
-                            dpg.add_vline_series([float(val)], parent=y_axis, label=lab)
-                        except Exception:
-                            pass
-
-    # ——— Actions ———
+    # ---------------- actions ----------------
     def run_samtools_preprocess(self, s, data):
         try:
             bam_in = self.get_selection_path(self.bam_app_data)[0]
         except Exception:
             self.add_log('Please select a BAM file first (Preprocess samtools).', error=True)
             return
-
         if not bam_in:
             self.add_log('Please select a BAM file first (Preprocess samtools).', error=True)
             return
@@ -1175,7 +773,6 @@ class GWASApp:
             self.add_log("variant_caller_utils not found. Please add it to the project.", error=True)
             return
 
-        # Prefer BAM-list if provided, else single BAM
         bamlist = self._get_appdata_path_safe(self.bamlist_app_data)
         bam_single = self._get_appdata_path_safe(self.bam_vc_app_data)
         bam_spec = bamlist or bam_single
@@ -1197,7 +794,6 @@ class GWASApp:
 
         self.add_log("Running variant calling...")
         try:
-            # API expected from variant_caller_utils
             vcf_gz, tbi = self.vcaller.call_variants(
                 input_path=bam_spec,
                 reference_fasta=fasta_path,
@@ -1210,34 +806,15 @@ class GWASApp:
                 log=self.add_log
             )
             self.vc_out_last = vcf_gz
-
-            # Make downstream tabs pick it up automatically
             self._set_virtual_selection('vcf_app_data', vcf_gz)
             name = self._fmt_name(vcf_gz)
             for tag in ("bcf_vcf_path_lbl", "qc_vcf_path_lbl", "conv_vcf_path_lbl"):
                 self._set_text(tag, name)
-
             self.add_log(f"Variant calling: Done → {vcf_gz}")
             if tbi and os.path.exists(tbi):
                 self.add_log(f"Index: {tbi}")
         except VariantCallerError as e:
             self.add_log(f"variant calling error: {e}", error=True)
-        except TypeError:
-            # Fallback if your function uses another signature (older/newer)
-            try:
-                vcf_gz, tbi = self.vcaller.call_variants(
-                    bam_spec, fasta_path, out_prefix=outpfx, threads=threads,
-                    regions_bed=regions_path, min_baseq=min_bq, min_mapq=min_mq,
-                    ploidy=ploidy, log=self.add_log
-                )
-                self.vc_out_last = vcf_gz
-                self._set_virtual_selection('vcf_app_data', vcf_gz)
-                name = self._fmt_name(vcf_gz)
-                for tag in ("bcf_vcf_path_lbl", "qc_vcf_path_lbl", "conv_vcf_path_lbl"):
-                    self._set_text(tag, name)
-                self.add_log(f"Variant calling: Done → {vcf_gz}")
-            except Exception as e2:
-                self.add_log(f"variant calling error: {e2}", error=True)
         except Exception as e:
             self.add_log(f"Unexpected error: {e}", error=True)
 
@@ -1253,12 +830,12 @@ class GWASApp:
         split_m = bool(dpg.get_value(self.bcf_split))
         left_al = bool(dpg.get_value(self.bcf_left))
         do_sort = bool(dpg.get_value(self.bcf_sort))
-        set_id  = bool(dpg.get_value(self.bcf_setid))
-        compr   = bool(dpg.get_value(self.bcf_compr))
-        index   = bool(dpg.get_value(self.bcf_index))
-        rmflt   = bool(dpg.get_value(self.bcf_rmflt))
-        filt    = dpg.get_value(self.bcf_filter_expr) or None
-        outpfx  = dpg.get_value(self.bcf_out_prefix) or None
+        set_id = bool(dpg.get_value(self.bcf_setid))
+        compr = bool(dpg.get_value(self.bcf_compr))
+        index = bool(dpg.get_value(self.bcf_index))
+        rmflt = bool(dpg.get_value(self.bcf_rmflt))
+        filt = dpg.get_value(self.bcf_filter_expr) or None
+        outpfx = dpg.get_value(self.bcf_out_prefix) or None
 
         self.add_log("Running bcftools preprocess...")
         try:
@@ -1279,13 +856,10 @@ class GWASApp:
                 keep_temps=False
             )
             self.bcf_out_last = final_vcf
-
             self._set_virtual_selection('vcf_app_data', final_vcf)
             name = self._fmt_name(final_vcf)
-            self._set_text("bcf_vcf_path_lbl", name)
-            self._set_text("qc_vcf_path_lbl", name)
-            self._set_text("conv_vcf_path_lbl", name)
-
+            for tag in ("bcf_vcf_path_lbl", "qc_vcf_path_lbl", "conv_vcf_path_lbl"):
+                self._set_text(tag, name)
             self.add_log("bcftools preprocess: Done.")
             if stats and os.path.exists(stats):
                 self.add_log(f"bcftools stats saved: {stats}")
@@ -1300,24 +874,16 @@ class GWASApp:
         except Exception:
             self.add_log('Please select a VCF file first.', error=True)
             return
-
         if not vcf_path:
             self.add_log('Please select a VCF file first.', error=True)
             return
 
-        try:
-            _ = self.get_selection_path(self.blacklist_app_data)[0]
-        except Exception:
-            pass
-
         _ = bool(dpg.get_value(self.deep_scan))
         self.add_log('Running VCF Quality Check...')
-
         report = self.vcf_qc_checker.evaluate(vcf_path, log_fn=self.add_log)
 
         dpg.configure_item("ResultsWindow", show=True)
         dpg.delete_item("ResultsWindow", children_only=True)
-
         dpg.add_text(f"VCF-QAScore: {report.score:.1f}   |   Verdict: {report.verdict}", parent="ResultsWindow")
         if report.hard_fail_reasons:
             dpg.add_spacer(height=4, parent="ResultsWindow")
@@ -1347,33 +913,54 @@ class GWASApp:
 
         dpg.add_spacer(height=10, parent="ResultsWindow")
         dpg.add_text("QC Plots:", parent="ResultsWindow")
-
         with dpg.tab_bar(parent="ResultsWindow") as qc_tabbar:
             d = report.dists or {}
-            self._add_hist_plot(
-                qc_tabbar, "Depth (DP)",
-                d.get("dp", []), bins=30,
-                p10=report.metrics.get("dp_p10"),
-                p50=report.metrics.get("dp_median"),
-                p90=report.metrics.get("dp_p90"),
-            )
-            self._add_hist_plot(
-                qc_tabbar, "Genotype Quality (GQ)",
-                d.get("gq", []), bins=30,
-                p10=report.metrics.get("gq_p10"),
-                p50=report.metrics.get("gq_median"),
-                p90=report.metrics.get("gq_p90"),
-            )
-            self._add_hist_plot(
-                qc_tabbar, "Allele Balance |AB - 0.5| (hets)",
-                d.get("ab_dev", []), bins=30, x_range=(0.0, 1.0),
-                p90=report.metrics.get("ab_dev_p90"),
-            )
-            self._add_hist_plot(
-                qc_tabbar, "Site Missingness",
-                d.get("site_missing", []), bins=30, x_range=(0.0, 1.0),
-                p90=report.metrics.get("site_missing_p90"),
-            )
+            self._add_hist_plot(qc_tabbar, "Depth (DP)", d.get("dp", []), bins=30,
+                                p10=report.metrics.get("dp_p10"),
+                                p50=report.metrics.get("dp_median"),
+                                p90=report.metrics.get("dp_p90"))
+            self._add_hist_plot(qc_tabbar, "Genotype Quality (GQ)", d.get("gq", []), bins=30,
+                                p10=report.metrics.get("gq_p10"),
+                                p50=report.metrics.get("gq_median"),
+                                p90=report.metrics.get("gq_p90"))
+            self._add_hist_plot(qc_tabbar, "Allele Balance |AB - 0.5| (hets)",
+                                d.get("ab_dev", []), bins=30, x_range=(0.0, 1.0),
+                                p90=report.metrics.get("ab_dev_p90"))
+            self._add_hist_plot(qc_tabbar, "Site Missingness",
+                                d.get("site_missing", []), bins=30, x_range=(0.0, 1.0),
+                                p90=report.metrics.get("site_missing_p90"))
+
+    def _add_hist_plot(self, parent, title, values, bins=30, x_range=None,
+                       p10=None, p50=None, p90=None):
+        if not values:
+            with dpg.tab(label=title, parent=parent):
+                dpg.add_text("No data")
+            return
+        mn = min(values);
+        mx = max(values)
+        if x_range:
+            mn, mx = x_range
+        if mx <= mn:
+            mx = mn + 1e-6
+        width = (mx - mn) / bins
+        counts = [0] * bins
+        for v in values:
+            if v < mn or v > mx:
+                continue
+            idx = min(bins - 1, int((v - mn) / (mx - mn) * bins))
+            counts[idx] += 1
+        centers = [mn + (i + 0.5) * width for i in range(bins)]
+        with dpg.tab(label=title, parent=parent):
+            with dpg.plot(label=title, height=380, width=720, anti_aliased=True):
+                x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="Value")
+                y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="Count")
+                dpg.add_bar_series(centers, counts, parent=y_axis, label="Histogram")
+                for val, lab in [(p10, "P10"), (p50, "P50"), (p90, "P90")]:
+                    if val is not None:
+                        try:
+                            dpg.add_vline_series([float(val)], parent=y_axis, label=lab)
+                        except Exception:
+                            pass
 
     def convert_vcf(self, s, data, user_data):
         maf = str(dpg.get_value(user_data[0]))
@@ -1414,7 +1001,8 @@ class GWASApp:
             check_input_data = self.gwas.validate_gwas_input_files(bed_path, pheno_path)
 
             chrom_mapping = self.helper.replace_with_integers(bed_path.replace('.bed', '.bim'))
-            self.settings_lst = [self.algorithm, bed_path, pheno_path, train_size_set, estimators, model_nr, max_dep_set]
+            self.settings_lst = [self.algorithm, bed_path, pheno_path, train_size_set, estimators, model_nr,
+                                 max_dep_set]
 
             if check_input_data[0]:
                 bed = Bed(str(bed_path), count_A1=False, chrom_map=chrom_mapping)
@@ -1424,7 +1012,8 @@ class GWASApp:
                 bed, pheno = pstutil.intersect_apply([bed, pheno])
                 bed_fixed = self.gwas.filter_out_missing(bed)
 
-                self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}", warn=True)
+                self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}",
+                             warn=True)
                 self.add_log('Starting Analysis, this might take a while...')
 
                 if self.algorithm in ('FaST-LMM', 'Linear regression'):
@@ -1502,7 +1091,8 @@ class GWASApp:
                 bed, pheno = pstutil.intersect_apply([bed, pheno])
                 bed_fixed = self.gwas.filter_out_missing(bed)
 
-                self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}", warn=True)
+                self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}",
+                             warn=True)
                 self.add_log('Starting Analysis, this might take a while...')
 
                 if self.algorithm == 'GP_LMM':
@@ -1554,7 +1144,6 @@ class GWASApp:
         except TypeError:
             self.add_log('Please select a phenotype and genotype file.', error=True)
 
-    # ——— Results window ———
     def show_results_window(self, df, algorithm, genomic_predict):
         dpg.configure_item("ResultsWindow", show=True)
         dpg.delete_item("ResultsWindow", children_only=True)
@@ -1628,13 +1217,31 @@ class GWASApp:
                                 for j in range(df.shape[1]):
                                     dpg.add_text(df.iloc[i, j])
 
-    # ——— Theme toggle ———
     def toggle_theme(self, sender, app_data):
         self.night_mode = bool(app_data)
         self.apply_component_themes()
         self.add_log("Dark mode enabled" if self.night_mode else "Light mode enabled")
 
-    # ——— Utils ———
+    def apply_component_themes(self):
+        apply_theme(dark=self.night_mode)
+
+        primary_tag = get_primary_button_theme_tag()
+
+        for b in self._primary_buttons:
+            if dpg.does_item_exist(b):
+                dpg.bind_item_theme(b, primary_tag)
+        for b in self._secondary_buttons:
+            if dpg.does_item_exist(b):
+                dpg.bind_item_theme(b, "theme_button_secondary")
+        for it in self._inputs:
+            if dpg.does_item_exist(it):
+                dpg.bind_item_theme(it, "theme_input")
+        for t in self._file_dialogs:
+            if dpg.does_item_exist(t):
+                dpg.bind_item_theme(t, "theme_dialog")
+        for k, btn in self._nav_buttons.items():
+            self._bind_nav_button_theme(btn, active=(k == self._active_key))
+
     def delete_files(self):
         for tag in ["manhatten_image", "manhatten_tag", "qq_image", "qq_tag",
                     "table_gwas", "table_gp", "ba_tag", "ba_tag2", "ba_image", "ba_image2"]:
@@ -1655,14 +1262,6 @@ class GWASApp:
                     os.remove(f)
                 except Exception:
                     pass
-
-    def add_log(self, message, warn=False, error=False):
-        if warn:
-            self.logz.log_warning(message)
-        elif error:
-            self.logz.log_error(message)
-        else:
-            self.logz.log_info(message)
 
     def _check_cli_versions(self):
         try:
@@ -1686,12 +1285,10 @@ class GWASApp:
         except Exception as e:
             self.add_log(f"tabix check failed: {e}", error=True)
 
-    # ——— Runner ———
-    def run(self):
-        self.apply_component_themes()
-        dpg.setup_dearpygui()
-        dpg.show_viewport()
-        dpg.start_dearpygui()
+
+def main():
+    app = GWASApp()
+    app.run()
 
 
 if __name__ == "__main__":
