@@ -294,7 +294,7 @@ def page_convert_plink(app, parent):
 
                 dpg.add_spacer(height=6)
                 variant_ids = dpg.add_button(
-                    label="Choose IDs file (option)",
+                    label="Choose IDs file (optional)",
                     callback=lambda: dpg.show_item("file_dialog_variants"),
                     width=220,
                     tag="tooltip_variant",
@@ -331,7 +331,7 @@ def page_convert_plink(app, parent):
                     user_data={"maf": maf_input, "geno": geno_input},
                     width=160,
                     height=36,
-                    enabled=False,  # يتفعّل بعد اختيار VCF
+                    enabled=False,
                 )
                 app._primary_buttons.append(convert_btn)
     return "page_plink"
@@ -364,7 +364,7 @@ def page_gwas(app, parent):
 
                 dpg.add_spacer(height=6)
                 cov_file = dpg.add_button(
-                    label="Choose covariate file (option)",
+                    label="Choose covariate file (optional)",
                     callback=lambda: dpg.show_item("file_dialog_cov"),
                     width=220,
                     tag="tooltip_cov",

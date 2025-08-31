@@ -4,13 +4,11 @@ import shutil
 import subprocess
 import dearpygui.dearpygui as dpg
 
-# optional logger
 try:
     from dearpygui_ext import logger
 except Exception:
     logger = None
 
-# project backends
 from vcf_quality import VCFQualityChecker
 from PlantVarFilter.gwas_pipeline import GWAS
 from PlantVarFilter.genomic_prediction_pipeline import GenomicPrediction
@@ -26,14 +24,12 @@ try:
 except Exception:
     VariantCaller = None
 
-# resolve tool path
 try:
     from PlantVarFilter.linux import resolve_tool
 except Exception:
     def resolve_tool(name: str) -> str:
         return shutil.which(name) or name
 
-# UI modules
 from ui.ui_theme import (
     setup_app_chrome,
     build_dark_theme,
@@ -41,8 +37,8 @@ from ui.ui_theme import (
     build_component_themes,
     apply_theme,
     set_font_scale,
-    set_accent_color,  # accent updater (runtime tags)
-    get_primary_button_theme_tag  # runtime-aware theme getter
+    set_accent_color,
+    get_primary_button_theme_tag
 )
 
 from ui.ui_pages import build_pages
@@ -50,7 +46,6 @@ from ui.ui_pages import build_pages
 
 class GWASApp:
     def __init__(self):
-        # common state
         self._inputs = []
         self._primary_buttons = []
         self._secondary_buttons = []
@@ -58,11 +53,9 @@ class GWASApp:
         self.default_path = os.path.expanduser("~")
         self.night_mode = True
 
-        # watermark params
         self._wm_alpha = 48
         self._wm_scale = 0.35
 
-        # backends
         self.gwas = GWAS()
         self.helper = HELPERS()
         self.genomic_predict_class = GenomicPrediction()
@@ -80,7 +73,6 @@ class GWASApp:
             tabix_bin=resolve_tool("tabix")
         ) if VariantCaller else None
 
-        # selections
         self.vcf_app_data = None
         self.variants_app_data = None
         self.results_directory = None
@@ -93,12 +85,10 @@ class GWASApp:
         self.bam_vc_app_data = None
         self.bamlist_app_data = None
 
-        # last outputs
         self.bcf_out_last = None
         self.sam_out_last = None
         self.vc_out_last = None
 
-        # plot/result filenames
         self.gwas_result_name = "gwas_results.csv"
         self.gwas_result_name_top = "gwas_results_top10000.csv"
         self.genomic_predict_name = "genomic_prediction_results.csv"
@@ -109,11 +99,8 @@ class GWASApp:
         self.pheno_stats_name = 'pheno_statistics.pdf'
         self.geno_stats_name = 'geno_statistics.pdf'
 
-        # UI handles
-        self.log_win = None
         self.logz = None
 
-        # handles created by pages
         self.sam_threads = None
         self.sam_remove_dups = None
         self.sam_compute_stats = None
@@ -150,12 +137,10 @@ class GWASApp:
         self.model_nr = None
         self.aggregation_method = None
 
-        # navigation state
-        self._nav_buttons = {}  # key -> button id
-        self._pages = {}  # key -> page tag (alias)
+        self._nav_buttons = {}
+        self._pages = {}
         self._active_key = None
 
-        # nav order and labels
         self._nav_items = [
             ("pre_sam", "Preprocess (samtools)"),
             ("vc", "Variant Calling (BAM/VCF)"),
@@ -176,9 +161,8 @@ class GWASApp:
         apply_theme(dark=True)
 
         with dpg.window(
-                tag="PrimaryWindow",
-                no_title_bar=True, no_move=True, no_resize=True, no_close=True, no_collapse=True,
-                pos=(0, 0)
+            tag="PrimaryWindow",
+            no_title_bar=True, no_move=True, no_resize=True, no_close=True, no_collapse=True, pos=(0, 0)
         ):
             pass
         dpg.set_primary_window("PrimaryWindow", True)
@@ -188,7 +172,6 @@ class GWASApp:
         with dpg.window(label="Workspace", tag="WorkspaceWindow", width=1600, height=1000, pos=(10, 10)):
             with dpg.group(horizontal=True, horizontal_spacing=12):
 
-                # Sidebar
                 with dpg.child_window(tag="Sidebar", width=240, border=True):
                     dpg.add_spacer(height=8)
                     self._build_header(parent="Sidebar")
@@ -198,17 +181,13 @@ class GWASApp:
 
                     for key, label in self._nav_items:
                         btn = dpg.add_button(
-                            label=label,
-                            width=-1,
-                            height=36,
-                            callback=self._nav_click,
-                            user_data=key
+                            label=label, width=-1, height=36,
+                            callback=self._nav_click, user_data=key
                         )
                         self._nav_buttons[key] = btn
                         self._bind_nav_button_theme(btn, active=False)
                         dpg.add_spacer(height=6)
 
-                # Content area
                 with dpg.child_window(tag="content_area", width=-1, border=True):
                     self._build_header(parent="content_area", big=True)
                     dpg.add_spacer(height=6)
@@ -219,11 +198,11 @@ class GWASApp:
                     if isinstance(built, dict):
                         self._pages.update(built)
 
-        # index pages from UI
+                    self._build_workspace_tabs(parent="content_area")
+
         self._index_pages_from_ui()
         self.add_log(f"[UI] Pages discovered: {list(self._pages.keys()) or 'NONE'}", warn=not bool(self._pages))
 
-        # settings callbacks
         settings_cbs = {
             "settings_dark_toggle": self.toggle_theme,
             "settings_font_scale": self._on_font_scale_change,
@@ -234,11 +213,6 @@ class GWASApp:
                 dpg.set_item_callback(tag, cb)
 
         self._build_tooltips()
-
-        self.log_win = dpg.add_window(label="Log", tag="LogWindow", width=800, height=400, show=True, pos=(20, 720))
-        if logger:
-            self.logz = logger.mvLogger(self.log_win)
-        dpg.add_window(label="Results", tag="ResultsWindow", width=1000, height=600, show=False)
 
         cb_map = {
             "file_dialog_vcf": self.callback_vcf,
@@ -257,16 +231,30 @@ class GWASApp:
             if dpg.does_item_exist(tag):
                 dpg.set_item_callback(tag, fn)
 
-        # hide all pages first
         for tag in self._pages.values():
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=False)
 
-        # default page
         self.show_page("pre_sam")
 
         self.apply_component_themes()
         self._check_cli_versions()
+
+    def _build_workspace_tabs(self, parent="content_area"):
+        dpg.add_spacer(height=8, parent=parent)
+        dpg.add_separator(parent=parent)
+        dpg.add_spacer(height=6, parent=parent)
+
+        with dpg.child_window(parent=parent, tag="panel_tabs_container", height=360, border=True):
+            with dpg.tab_bar(tag="panel_tabs", reorderable=True):
+                with dpg.tab(label="Log", tag="tab_log", closable=False):
+                    if logger:
+                        self.logz = logger.mvLogger(parent="tab_log")
+                    else:
+                        dpg.add_input_text(tag="log_fallback", multiline=True, readonly=True, width=-1, height=-1)
+
+                with dpg.tab(label="Results", tag="tab_results", closable=True):
+                    dpg.add_text("No results yet.", tag="tab_results_placeholder")
 
     # ----------- nav helpers -----------
     def _nav_click(self, sender, app_data, user_data):
@@ -374,7 +362,6 @@ class GWASApp:
                             tag="select_directory", cancel_callback=self.cancel_callback_directory,
                             width=900, height=540, default_path=self.default_path, modal=True)
         self._file_dialogs.append("select_directory")
-
     # ---------------- header ----------------
     def _build_header(self, parent, big: bool = False):
         with dpg.group(parent=parent, horizontal=True, horizontal_spacing=8):
@@ -423,8 +410,6 @@ class GWASApp:
         self._active_key = key
         for k, btn in self._nav_buttons.items():
             self._bind_nav_button_theme(btn, active=(k == key))
-
-        # refresh watermark after page switch
         self._refresh_watermark()
 
     # ---------------- tooltips ----------------
@@ -471,14 +456,11 @@ class GWASApp:
             dpg.create_viewport(title="PlantVarFilter", width=1600, height=1000, resizable=True)
             dpg.setup_dearpygui()
             dpg.show_viewport()
-
-            # initial watermark + ensure refresh after first frame
             self._refresh_watermark()
             try:
                 dpg.set_frame_callback(1, lambda: self._refresh_watermark())
             except Exception:
                 pass
-
             self._hook_viewport_resize()
             self._on_viewport_resize(None, None)
             dpg.start_dearpygui()
@@ -498,28 +480,22 @@ class GWASApp:
             dpg.set_item_height("PrimaryWindow", dpg.get_viewport_client_height())
         self._refresh_watermark()
 
-    # ---- watermark helper ----
     def _refresh_watermark(self):
         try:
             if not dpg.does_item_exist("content_area"):
                 return
-
             from ui.watermark import setup as setup_watermark
-
-            # draw after one frame so the layout/rects are valid
             def _do():
                 try:
                     setup_watermark(
                         alpha=self._wm_alpha,
                         scale=self._wm_scale,
                         target_window_tag="content_area",
-                        front=True,  # set False if you want it behind everything
+                        front=True,
                     )
                 except Exception as ex:
                     self.add_log(f"[wm] draw failed: {ex}", warn=True)
-
             dpg.set_frame_callback(dpg.get_frame_count() + 1, _do)
-
         except Exception as e:
             self.add_log(f"[wm] refresh failed: {e}", warn=True)
 
@@ -556,7 +532,12 @@ class GWASApp:
                 self.logz.log_info(message)
         else:
             prefix = "[WARN]" if warn else "[ERROR]" if error else "[INFO]"
-            print(prefix, message)
+            txt = f"{prefix} {message}\n"
+            if dpg.does_item_exist("log_fallback"):
+                old = dpg.get_value("log_fallback") or ""
+                dpg.set_value("log_fallback", old + txt)
+            else:
+                print(prefix, message)
 
     def _fmt_name(self, path: str) -> str:
         try:
@@ -597,10 +578,8 @@ class GWASApp:
         vcf_path, current_path = self.get_selection_path(self.vcf_app_data)
         if not vcf_path:
             return
-        # enable Convert VCF button once VCF is chosen
         if dpg.does_item_exist("convert_vcf_btn"):
             dpg.configure_item("convert_vcf_btn", enabled=True)
-
         dpg.configure_item("file_dialog_variants", default_path=current_path or self.default_path)
         self.add_log('VCF Selected: ' + vcf_path)
         name = self._fmt_name(vcf_path)
@@ -886,28 +865,29 @@ class GWASApp:
         self.add_log('Running VCF Quality Check...')
         report = self.vcf_qc_checker.evaluate(vcf_path, log_fn=self.add_log)
 
-        dpg.configure_item("ResultsWindow", show=True)
-        dpg.delete_item("ResultsWindow", children_only=True)
-        dpg.add_text(f"VCF-QAScore: {report.score:.1f}   |   Verdict: {report.verdict}", parent="ResultsWindow")
+        if dpg.does_item_exist("tab_results"):
+            dpg.delete_item("tab_results", children_only=True)
+
+        dpg.add_text(f"VCF-QAScore: {report.score:.1f}   |   Verdict: {report.verdict}", parent="tab_results")
         if report.hard_fail_reasons:
-            dpg.add_spacer(height=4, parent="ResultsWindow")
-            dpg.add_text("Hard fail reasons:", parent="ResultsWindow")
+            dpg.add_spacer(height=4, parent="tab_results")
+            dpg.add_text("Hard fail reasons:", parent="tab_results")
             for r in report.hard_fail_reasons:
-                dpg.add_text(f"- {r}", parent="ResultsWindow")
+                dpg.add_text(f"- {r}", parent="tab_results")
             return
 
-        dpg.add_spacer(height=10, parent="ResultsWindow")
-        dpg.add_text("Recommendations:", parent="ResultsWindow")
+        dpg.add_spacer(height=10, parent="tab_results")
+        dpg.add_text("Recommendations:", parent="tab_results")
         if report.recommendations:
             for r in report.recommendations:
-                dpg.add_text(f"- {r}", parent="ResultsWindow")
+                dpg.add_text(f"- {r}", parent="tab_results")
         else:
-            dpg.add_text("- No specific recommendations.", parent="ResultsWindow")
+            dpg.add_text("- No specific recommendations.", parent="tab_results")
 
-        dpg.add_spacer(height=10, parent="ResultsWindow")
-        dpg.add_text("Metrics:", parent="ResultsWindow")
+        dpg.add_spacer(height=10, parent="tab_results")
+        dpg.add_text("Metrics:", parent="tab_results")
         with dpg.table(row_background=True, borders_innerH=True, borders_outerH=True,
-                       borders_innerV=True, borders_outerV=True, parent="ResultsWindow"):
+                       borders_innerV=True, borders_outerV=True, parent="tab_results"):
             dpg.add_table_column(label="Metric")
             dpg.add_table_column(label="Value")
             for k, v in sorted(report.metrics.items()):
@@ -915,9 +895,9 @@ class GWASApp:
                     dpg.add_text(str(k))
                     dpg.add_text(f"{v:.6g}" if isinstance(v, (int, float)) else str(v))
 
-        dpg.add_spacer(height=10, parent="ResultsWindow")
-        dpg.add_text("QC Plots:", parent="ResultsWindow")
-        with dpg.tab_bar(parent="ResultsWindow") as qc_tabbar:
+        dpg.add_spacer(height=10, parent="tab_results")
+        dpg.add_text("QC Plots:", parent="tab_results")
+        with dpg.tab_bar(parent="tab_results") as qc_tabbar:
             d = report.dists or {}
             self._add_hist_plot(qc_tabbar, "Depth (DP)", d.get("dp", []), bins=30,
                                 p10=report.metrics.get("dp_p10"),
@@ -967,15 +947,7 @@ class GWASApp:
                             pass
 
     def convert_vcf(self, s, data, user_data):
-        """
-        Robust VCF -> PLINK conversion:
-        - Reads MAF/GENO from user_data dict or fallback tags.
-        - Uses selected VCF/IDs from file dialogs (self.vcf_app_data / self.variants_app_data).
-        - Logs command output and verifies .bed/.bim/.fam.
-        """
         import os
-
-        # 1) Read MAF / GENO safely
         try:
             if isinstance(user_data, dict):
                 maf_item = user_data.get("maf", "tooltip_maf")
@@ -984,14 +956,12 @@ class GWASApp:
                 maf_item, geno_item = user_data[0], user_data[1]
             else:
                 maf_item, geno_item = "tooltip_maf", "tooltip_missing"
-
             maf = (str(dpg.get_value(maf_item)) or "0.01").strip()
             geno = (str(dpg.get_value(geno_item)) or "0.1").strip()
         except Exception as e:
             self.add_log(f"[WARN] Using fallback for MAF/GENO due to: {e}")
             maf, geno = "0.01", "0.1"
 
-        # 2) Fetch paths
         vcf_path, _ = self.get_selection_path(self.vcf_app_data)
         variants_path = None if self.variants_app_data is None else self.get_selection_path(self.variants_app_data)[0]
 
@@ -999,14 +969,12 @@ class GWASApp:
             self.add_log('[ERROR] Please select a valid VCF file first.', error=True)
             return
 
-        # 3) Build output prefix
         base_noext = os.path.splitext(vcf_path)[0]
         try:
             out_prefix = f"{base_noext}_maf{round(float(maf), 3)}_geno{round(float(geno), 3)}"
         except Exception:
             out_prefix = f"{base_noext}_maf{maf}_geno{geno}"
 
-        # 4) Log inputs
         self.add_log("[INFO] Converting VCF → PLINK")
         self.add_log(f"[INFO] VCF: {vcf_path}")
         if variants_path:
@@ -1014,7 +982,6 @@ class GWASApp:
         self.add_log(f"[INFO] MAF={maf}, GENO={geno}")
         self.add_log(f"[INFO] OUT={out_prefix}")
 
-        # 5) Run conversion and log output
         try:
             plink_log = self.gwas.vcf_to_bed(vcf_path, variants_path, out_prefix, maf, geno)
             self.add_log(plink_log)
@@ -1022,13 +989,10 @@ class GWASApp:
             self.add_log(f"[ERROR] PLINK conversion failed: {e}", error=True)
             return
 
-        # 6) Verify outputs and prime next step
         bed, bim, fam = f"{out_prefix}.bed", f"{out_prefix}.bim", f"{out_prefix}.fam"
         if all(os.path.exists(p) for p in (bed, bim, fam)):
             self.add_log("[OK] BED/BIM/FAM generated successfully.")
-            # set selection for downstream steps
             self._set_virtual_selection('bed_app_data', bed)
-            # also show filename in GWAS/GP labels if present
             for tag in ("gwas_bed_path_lbl", "gp_bed_path_lbl"):
                 self._set_text(tag, self._fmt_name(bed))
         else:
@@ -1071,8 +1035,7 @@ class GWASApp:
                 bed, pheno = pstutil.intersect_apply([bed, pheno])
                 bed_fixed = self.gwas.filter_out_missing(bed)
 
-                self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}",
-                             warn=True)
+                self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}", warn=True)
                 self.add_log('Starting Analysis, this might take a while...')
 
                 if self.algorithm in ('FaST-LMM', 'Linear regression'):
@@ -1210,27 +1173,15 @@ class GWASApp:
                     self.add_log(f"[VAL] Validation failed: {e}", error=True)
                     return
 
-                # Show validation correlation plot(s) if produced by the backend
-                possible_plots = [
+                for p in [
                     "gp_validation_plot.png",
                     "correlation_plots.png",
                     os.path.join(os.getcwd(), "gp_validation_plot.png"),
                     os.path.join(os.getcwd(), "correlation_plots.png"),
-                ]
-                plot_path = next((p for p in possible_plots if os.path.exists(p)), None)
-                if plot_path:
-                    dpg.configure_item("ResultsWindow", show=True)
-                    dpg.delete_item("ResultsWindow", children_only=True)
-                    try:
-                        w, h, c, data = dpg.load_image(plot_path)
-                        with dpg.texture_registry(show=False):
-                            dpg.add_static_texture(width=w, height=h, default_value=data, tag="gp_val_plot_tag")
-                        dpg.add_text("Validation Correlation Plots", parent="ResultsWindow")
-                        dpg.add_spacer(height=6, parent="ResultsWindow")
-                        dpg.add_image(texture_tag="gp_val_plot_tag", parent="ResultsWindow", width=min(1200, w),
-                                      height=int(h * (min(1200, w) / w)))
-                    except Exception as ex:
-                        self.add_log(f"[VAL] Could not load validation plot: {ex}", warn=True)
+                ]:
+                    if os.path.exists(p):
+                        self._show_validation_plot(p)
+                        break
                 return
 
             if gp_df is not None:
@@ -1248,13 +1199,30 @@ class GWASApp:
         except Exception as e:
             self.add_log(f'Unexpected error in Genomic Prediction: {e}', error=True)
 
-    def show_results_window(self, df, algorithm, genomic_predict):
-        dpg.configure_item("ResultsWindow", show=True)
-        dpg.delete_item("ResultsWindow", children_only=True)
+    def _show_validation_plot(self, plot_path: str):
+        if not dpg.does_item_exist("tab_results"):
+            return
+        dpg.delete_item("tab_results", children_only=True)
+        try:
+            w, h, c, data = dpg.load_image(plot_path)
+            with dpg.texture_registry(show=False):
+                dpg.add_static_texture(width=w, height=h, default_value=data, tag="gp_val_plot_tag")
+            dpg.add_text("Validation Correlation Plots", parent="tab_results")
+            dpg.add_spacer(height=6, parent="tab_results")
+            width = min(1200, w)
+            dpg.add_image(texture_tag="gp_val_plot_tag", parent="tab_results",
+                          width=width, height=int(h * (width / w)))
+        except Exception as ex:
+            self.add_log(f"[VAL] Could not load validation plot: {ex}", warn=True)
 
-        dpg.add_button(label="Export Results", parent="ResultsWindow",
+    def show_results_window(self, df, algorithm, genomic_predict):
+        if not dpg.does_item_exist("tab_results"):
+            return
+        dpg.delete_item("tab_results", children_only=True)
+
+        dpg.add_button(label="Export Results", parent="tab_results",
                        callback=lambda: dpg.show_item("select_directory"))
-        dpg.add_spacer(height=10, parent="ResultsWindow")
+        dpg.add_spacer(height=10, parent="tab_results")
 
         if genomic_predict:
             w1, h1, c1, data1 = dpg.load_image(self.gp_plot_name)
@@ -1264,7 +1232,7 @@ class GWASApp:
             with dpg.texture_registry(show=False):
                 dpg.add_static_texture(width=w2, height=h2, default_value=data2, tag="ba_tag2")
 
-            with dpg.tab_bar(label='tabbar_results_gp', parent="ResultsWindow"):
+            with dpg.tab_bar(label='tabbar_results_gp', parent="tab_results"):
                 with dpg.tab(label="Genomic Prediction Results"):
                     df = df[['ID1', 'BED_ID2_x', 'Mean_Predicted_Value', 'Pheno_Value', 'Difference']]
                     df.columns = ['FID', 'IID', 'Predicted_Value', 'Pheno_Value', 'Difference']
@@ -1288,7 +1256,7 @@ class GWASApp:
             with dpg.texture_registry(show=False):
                 dpg.add_static_texture(width=w, height=h, default_value=data, tag="manhatten_tag")
 
-            with dpg.tab_bar(label='tabbar_results_gwas', parent="ResultsWindow"):
+            with dpg.tab_bar(label='tabbar_results_gwas', parent="tab_results"):
                 with dpg.tab(label="Manhattan Plot"):
                     if algorithm in ("FaST-LMM", "Linear regression"):
                         dpg.add_image(texture_tag="manhatten_tag", tag="manhatten_image", width=950, height=400)
@@ -1328,9 +1296,7 @@ class GWASApp:
 
     def apply_component_themes(self):
         apply_theme(dark=self.night_mode)
-
         primary_tag = get_primary_button_theme_tag()
-
         for b in self._primary_buttons:
             if dpg.does_item_exist(b):
                 dpg.bind_item_theme(b, primary_tag)
@@ -1348,7 +1314,8 @@ class GWASApp:
 
     def delete_files(self):
         for tag in ["manhatten_image", "manhatten_tag", "qq_image", "qq_tag",
-                    "table_gwas", "table_gp", "ba_tag", "ba_tag2", "ba_image", "ba_image2"]:
+                    "table_gwas", "table_gp", "ba_tag", "ba_tag2", "ba_image", "ba_image2",
+                    "gp_val_plot_tag"]:
             if dpg.does_item_exist(tag):
                 dpg.delete_item(tag)
         for f in [
