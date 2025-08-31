@@ -325,10 +325,13 @@ def page_convert_plink(app, parent):
 
                 dpg.add_spacer(height=14)
                 convert_btn = dpg.add_button(
+                    tag="convert_vcf_btn",
                     label="Convert VCF",
-                    callback=lambda s, a, u=[maf_input, geno_input, vcf, variant_ids]: app.convert_vcf(s, a, u),
+                    callback=app.convert_vcf,
+                    user_data={"maf": maf_input, "geno": geno_input},
                     width=160,
                     height=36,
+                    enabled=False,  # يتفعّل بعد اختيار VCF
                 )
                 app._primary_buttons.append(convert_btn)
     return "page_plink"
@@ -388,7 +391,7 @@ def page_gwas(app, parent):
                 dpg.add_spacer(height=14)
                 gwas_btn = dpg.add_button(
                     label="Run GWAS",
-                    callback=lambda s, a, u=[geno, pheno]: app.run_gwas(s, a, u),
+                    callback=lambda s, a: app.run_gwas(s, a, [geno, pheno]),
                     width=180,
                     height=36,
                 )
@@ -440,7 +443,7 @@ def page_genomic_prediction(app, parent):
                 dpg.add_spacer(height=14)
                 gp_btn = dpg.add_button(
                     label="Run Genomic Prediction",
-                    callback=lambda s, a, u=[geno, pheno]: app.run_genomic_prediction(s, a, u),
+                    callback=lambda s, a: app.run_genomic_prediction(s, a, [geno, pheno]),
                     width=220,
                     height=36,
                 )
@@ -560,7 +563,6 @@ def page_settings(app, parent):
                         min_value=1,
                         max_value=50,
                         min_clamped=True,
-                        max_clamped=True,
                         tag="tooltip_model",
                     )
                     app._inputs.append(app.model_nr)

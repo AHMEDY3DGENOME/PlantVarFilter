@@ -597,6 +597,10 @@ class GWASApp:
         vcf_path, current_path = self.get_selection_path(self.vcf_app_data)
         if not vcf_path:
             return
+        # enable Convert VCF button once VCF is chosen
+        if dpg.does_item_exist("convert_vcf_btn"):
+            dpg.configure_item("convert_vcf_btn", enabled=True)
+
         dpg.configure_item("file_dialog_variants", default_path=current_path or self.default_path)
         self.add_log('VCF Selected: ' + vcf_path)
         name = self._fmt_name(vcf_path)
@@ -936,7 +940,7 @@ class GWASApp:
             with dpg.tab(label=title, parent=parent):
                 dpg.add_text("No data")
             return
-        mn = min(values);
+        mn = min(values)
         mx = max(values)
         if x_range:
             mn, mx = x_range
@@ -963,17 +967,72 @@ class GWASApp:
                             pass
 
     def convert_vcf(self, s, data, user_data):
-        maf = str(dpg.get_value(user_data[0]))
-        geno = str(dpg.get_value(user_data[1]))
+        """
+        Robust VCF -> PLINK conversion:
+        - Reads MAF/GENO from user_data dict or fallback tags.
+        - Uses selected VCF/IDs from file dialogs (self.vcf_app_data / self.variants_app_data).
+        - Logs command output and verifies .bed/.bim/.fam.
+        """
+        import os
+
+        # 1) Read MAF / GENO safely
+        try:
+            if isinstance(user_data, dict):
+                maf_item = user_data.get("maf", "tooltip_maf")
+                geno_item = user_data.get("geno", "tooltip_missing")
+            elif isinstance(user_data, (list, tuple)) and len(user_data) >= 2:
+                maf_item, geno_item = user_data[0], user_data[1]
+            else:
+                maf_item, geno_item = "tooltip_maf", "tooltip_missing"
+
+            maf = (str(dpg.get_value(maf_item)) or "0.01").strip()
+            geno = (str(dpg.get_value(geno_item)) or "0.1").strip()
+        except Exception as e:
+            self.add_log(f"[WARN] Using fallback for MAF/GENO due to: {e}")
+            maf, geno = "0.01", "0.1"
+
+        # 2) Fetch paths
         vcf_path, _ = self.get_selection_path(self.vcf_app_data)
         variants_path = None if self.variants_app_data is None else self.get_selection_path(self.variants_app_data)[0]
-        if not vcf_path:
-            self.add_log('Please select a VCF file first.', error=True)
+
+        if not vcf_path or not os.path.exists(vcf_path):
+            self.add_log('[ERROR] Please select a valid VCF file first.', error=True)
             return
-        self.add_log('Start converting VCF to BED...')
-        out_prefix = f"{vcf_path.split('.')[0]}_maf{round(float(maf), 2)}_geno{round(float(geno), 2)}"
-        plink_log = self.gwas.vcf_to_bed(vcf_path, variants_path, out_prefix, maf, geno)
-        self.add_log(plink_log)
+
+        # 3) Build output prefix
+        base_noext = os.path.splitext(vcf_path)[0]
+        try:
+            out_prefix = f"{base_noext}_maf{round(float(maf), 3)}_geno{round(float(geno), 3)}"
+        except Exception:
+            out_prefix = f"{base_noext}_maf{maf}_geno{geno}"
+
+        # 4) Log inputs
+        self.add_log("[INFO] Converting VCF → PLINK")
+        self.add_log(f"[INFO] VCF: {vcf_path}")
+        if variants_path:
+            self.add_log(f"[INFO] IDs: {variants_path}")
+        self.add_log(f"[INFO] MAF={maf}, GENO={geno}")
+        self.add_log(f"[INFO] OUT={out_prefix}")
+
+        # 5) Run conversion and log output
+        try:
+            plink_log = self.gwas.vcf_to_bed(vcf_path, variants_path, out_prefix, maf, geno)
+            self.add_log(plink_log)
+        except Exception as e:
+            self.add_log(f"[ERROR] PLINK conversion failed: {e}", error=True)
+            return
+
+        # 6) Verify outputs and prime next step
+        bed, bim, fam = f"{out_prefix}.bed", f"{out_prefix}.bim", f"{out_prefix}.fam"
+        if all(os.path.exists(p) for p in (bed, bim, fam)):
+            self.add_log("[OK] BED/BIM/FAM generated successfully.")
+            # set selection for downstream steps
+            self._set_virtual_selection('bed_app_data', bed)
+            # also show filename in GWAS/GP labels if present
+            for tag in ("gwas_bed_path_lbl", "gp_bed_path_lbl"):
+                self._set_text(tag, self._fmt_name(bed))
+        else:
+            self.add_log("[ERROR] Conversion did not produce BED/BIM/FAM files.", error=True)
 
     def run_gwas(self, s, data, user_data):
         self.delete_files()
@@ -1076,56 +1135,102 @@ class GWASApp:
         nr_jobs = int(dpg.get_value(self.nr_jobs)) or -1
 
         try:
-            self.add_log('Reading files...')
-            bed_path = self.get_selection_path(self.bed_app_data)[0]
-            pheno_path = self.get_selection_path(self.pheno_app_data)[0]
+            max_dep_set = int(max_dep_set)
+        except Exception:
+            max_dep_set = 0
+        try:
+            model_nr = int(model_nr)
+        except Exception:
+            model_nr = 1
 
+        gp_df = None
+
+        try:
+            bed_path = self._get_appdata_path_safe(self.bed_app_data)
+            pheno_path = self._get_appdata_path_safe(self.pheno_app_data)
+            if not bed_path or not pheno_path:
+                self.add_log('Please select a phenotype and genotype file.', error=True)
+                return
+
+            self.add_log('Reading files...')
             self.add_log('Validating files...')
-            check_input_data = self.gwas.validate_gwas_input_files(bed_path, pheno_path)
+            ok, msg = self.gwas.validate_gwas_input_files(bed_path, pheno_path)
+            if not ok:
+                self.add_log(msg, error=True)
+                return
+
             chrom_mapping = self.helper.replace_with_integers(bed_path.replace('.bed', '.bim'))
             self.settings_lst = [self.algorithm, bed_path, pheno_path, test_size, estimators, model_nr, max_dep_set]
 
-            if check_input_data[0]:
-                bed = Bed(str(bed_path), count_A1=False, chrom_map=chrom_mapping)
-                pheno = Pheno(str(pheno_path))
-                bed, pheno = pstutil.intersect_apply([bed, pheno])
-                bed_fixed = self.gwas.filter_out_missing(bed)
+            bed = Bed(str(bed_path), count_A1=False, chrom_map=chrom_mapping)
+            pheno = Pheno(str(pheno_path))
+            bed, pheno = pstutil.intersect_apply([bed, pheno])
+            bed_fixed = self.gwas.filter_out_missing(bed)
 
-                self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}",
-                             warn=True)
-                self.add_log('Starting Analysis, this might take a while...')
+            self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}", warn=True)
+            self.add_log('Starting Analysis, this might take a while...')
 
-                if self.algorithm == 'GP_LMM':
-                    gp_df = self.genomic_predict_class.run_lmm_gp(
-                        bed_fixed, pheno, self.genomic_predict_name, model_nr, self.add_log,
-                        bed_path, chrom_mapping
-                    )
-                elif self.algorithm == 'Random Forest (AI)':
-                    gp_df = self.genomic_predict_class.run_gp_rf(
-                        bed_fixed, pheno, bed_path, test_size, estimators,
-                        self.genomic_predict_name, chrom_mapping, self.add_log,
-                        model_nr, nr_jobs
-                    )
-                elif self.algorithm == 'XGBoost (AI)':
-                    gp_df = self.genomic_predict_class.run_gp_xg(
-                        bed_fixed, pheno, bed_path, test_size, estimators,
-                        self.genomic_predict_name, chrom_mapping, self.add_log,
-                        model_nr, max_dep_set, nr_jobs
-                    )
-                elif self.algorithm == 'Ridge Regression':
-                    gp_df = self.genomic_predict_class.run_gp_ridge(
-                        bed_fixed, pheno, bed_path, test_size, 1.0,
-                        self.genomic_predict_name, chrom_mapping, self.add_log,
-                        model_nr
-                    )
-                else:
-                    self.genomic_predict_class.model_validation(
+            if self.algorithm == 'GP_LMM':
+                gp_df = self.genomic_predict_class.run_lmm_gp(
+                    bed_fixed, pheno, self.genomic_predict_name, model_nr, self.add_log,
+                    bed_path, chrom_mapping
+                )
+
+            elif self.algorithm == 'Random Forest (AI)':
+                gp_df = self.genomic_predict_class.run_gp_rf(
+                    bed_fixed, pheno, bed_path, test_size, estimators,
+                    self.genomic_predict_name, chrom_mapping, self.add_log,
+                    model_nr, nr_jobs
+                )
+
+            elif self.algorithm == 'XGBoost (AI)':
+                gp_df = self.genomic_predict_class.run_gp_xg(
+                    bed_fixed, pheno, bed_path, test_size, estimators,
+                    self.genomic_predict_name, chrom_mapping, self.add_log,
+                    model_nr, max_dep_set, nr_jobs
+                )
+
+            elif self.algorithm == 'Ridge Regression':
+                gp_df = self.genomic_predict_class.run_gp_ridge(
+                    bed_fixed, pheno, bed_path, test_size, 1.0,
+                    self.genomic_predict_name, chrom_mapping, self.add_log,
+                    model_nr
+                )
+
+            else:
+                self.add_log("[VAL] Running internal cross-validation (model_validation)...")
+                try:
+                    _ = self.genomic_predict_class.model_validation(
                         bed_fixed, pheno, bed_path, test_size, estimators,
                         self.genomic_predict_name, chrom_mapping, self.add_log,
                         model_nr, max_dep_set, validation_size=0.1
                     )
-            else:
-                self.add_log(check_input_data[1], error=True)
+                    self.add_log("[VAL] Validation completed.")
+                except Exception as e:
+                    self.add_log(f"[VAL] Validation failed: {e}", error=True)
+                    return
+
+                # Show validation correlation plot(s) if produced by the backend
+                possible_plots = [
+                    "gp_validation_plot.png",
+                    "correlation_plots.png",
+                    os.path.join(os.getcwd(), "gp_validation_plot.png"),
+                    os.path.join(os.getcwd(), "correlation_plots.png"),
+                ]
+                plot_path = next((p for p in possible_plots if os.path.exists(p)), None)
+                if plot_path:
+                    dpg.configure_item("ResultsWindow", show=True)
+                    dpg.delete_item("ResultsWindow", children_only=True)
+                    try:
+                        w, h, c, data = dpg.load_image(plot_path)
+                        with dpg.texture_registry(show=False):
+                            dpg.add_static_texture(width=w, height=h, default_value=data, tag="gp_val_plot_tag")
+                        dpg.add_text("Validation Correlation Plots", parent="ResultsWindow")
+                        dpg.add_spacer(height=6, parent="ResultsWindow")
+                        dpg.add_image(texture_tag="gp_val_plot_tag", parent="ResultsWindow", width=min(1200, w),
+                                      height=int(h * (min(1200, w) / w)))
+                    except Exception as ex:
+                        self.add_log(f"[VAL] Could not load validation plot: {ex}", warn=True)
                 return
 
             if gp_df is not None:
@@ -1135,14 +1240,13 @@ class GWASApp:
                 self.genomic_predict_class.plot_gp_scatter(gp_df, self.gp_plot_name_scatter, self.algorithm)
                 self.add_log('Done...')
                 self.show_results_window(gp_df, self.algorithm, genomic_predict=True)
-
                 self.bed_app_data = None
                 self.pheno_app_data = None
             else:
-                self.add_log('Error, GWAS Analysis could not be started.', error=True)
+                self.add_log('Error, Genomic Prediction could not be started.', error=True)
 
-        except TypeError:
-            self.add_log('Please select a phenotype and genotype file.', error=True)
+        except Exception as e:
+            self.add_log(f'Unexpected error in Genomic Prediction: {e}', error=True)
 
     def show_results_window(self, df, algorithm, genomic_predict):
         dpg.configure_item("ResultsWindow", show=True)
