@@ -15,7 +15,7 @@ class VCFQualityReport:
     metrics: Dict[str, float]        # key -> value
     recommendations: List[str]
     hard_fail_reasons: List[str]
-    dists: Optional[Dict[str, List[float]]] = None   # NEW: raw distributions (for plots)
+    dists: Optional[Dict[str, List[float]]] = None   # raw distributions (for plots)
 
 class VCFQualityChecker:
     """
@@ -39,7 +39,6 @@ class VCFQualityChecker:
 
         feats, dists = self._scan_features(vcf_path, log_fn)
 
-        # Small dataset handling (more forgiving than hard fail)
         sites = int(feats.get("sites_scanned", 0))
         small_penalty = 0.0
         recs: List[str] = []
@@ -58,6 +57,46 @@ class VCFQualityChecker:
         score = max(0.0, base_score - small_penalty)
         verdict = "Pass" if score >= 80 else ("Caution" if score >= 60 else "Fail")
         return VCFQualityReport(score, verdict, feats, recs + recs_base, [], dists)
+
+    def to_text(self, report: VCFQualityReport, vcf_path: Optional[str] = None) -> str:
+        """Render a human-readable QC report string."""
+        lines: List[str] = []
+        if vcf_path:
+            lines.append(f"VCF: {vcf_path}")
+        lines.append(f"QC Score: {report.score:.1f}")
+        lines.append(f"Verdict : {report.verdict}")
+        lines.append("")
+        lines.append("== Metrics ==")
+        # Surface key headline metrics first if present
+        headline = ["samples", "sites_scanned", "snps", "indels", "multiallelic",
+                    "multiallelic_ratio", "snp_indel_ratio", "titv",
+                    "site_missing_mean", "site_missing_p90",
+                    "sample_missing_mean", "sample_missing_p90",
+                    "dp_median", "dp_p10", "dp_p90",
+                    "gq_median", "gq_p10", "gq_p90",
+                    "ab_dev_mean", "ab_dev_p90"]
+        shown = set()
+        for k in headline:
+            if k in report.metrics:
+                lines.append(f"{k:>22}: {report.metrics[k]}")
+                shown.add(k)
+        # Print any remaining metrics
+        for k, v in sorted(report.metrics.items()):
+            if k not in shown:
+                lines.append(f"{k:>22}: {v}")
+        lines.append("")
+        if report.hard_fail_reasons:
+            lines.append("== Hard Fail Reasons ==")
+            for r in report.hard_fail_reasons:
+                lines.append(f"- {r}")
+            lines.append("")
+        lines.append("== Recommendations ==")
+        if report.recommendations:
+            for r in report.recommendations:
+                lines.append(f"- {r}")
+        else:
+            lines.append("- None")
+        return "\n".join(lines)
 
     # ---------- Internals ----------
     def _is_gz(self, path: str) -> bool:
@@ -85,7 +124,6 @@ class VCFQualityChecker:
                         has_format = True
                     if line.startswith("#CHROM"):
                         parts = line.strip().split("\t")
-                        # #CHROM POS ID REF ALT QUAL FILTER INFO [FORMAT [SAMPLES...]]
                         if len(parts) < 8:
                             reasons.append("Header columns incomplete (#CHROM line).")
                         if len(parts) >= 10:
@@ -103,7 +141,6 @@ class VCFQualityChecker:
         return reasons
 
     def _scan_features(self, vcf_path: str, log_fn) -> Tuple[Dict[str, float], Dict[str, List[float]]]:
-        # Aggregates
         total = snps = indels = multiallelic = 0
         ti = tv = 0
         site_missing_rates: List[float] = []
@@ -137,19 +174,16 @@ class VCFQualityChecker:
                 sample_fields = parts[9:] if len(parts) > 9 else []
                 FORMAT = parts[8] if len(parts) > 8 else ""
 
-                # basic REF/ALT checks
                 alts = ALT.split(",")
                 if len(alts) > 1:
                     multiallelic += 1
 
-                # classify snp/indel
                 ref_len = len(REF)
                 alt_is_snp = all(len(a) == 1 and a in DNA for a in alts if a != ".")
                 ref_is_snp = (ref_len == 1 and REF in DNA)
 
                 if ref_is_snp and alt_is_snp:
                     snps += 1
-                    # Ti/Tv only for first biallelic SNP
                     if len(alts) == 1 and alts[0] in DNA:
                         if self._is_transition(REF, alts[0]):
                             ti += 1
@@ -158,7 +192,6 @@ class VCFQualityChecker:
                 else:
                     indels += 1
 
-                # samples / missingness / DP / GQ / AB
                 site_missing = 0.0
                 if samples_n and FORMAT:
                     if not format_keys:
@@ -180,15 +213,12 @@ class VCFQualityChecker:
                         toks = cell.split(":")
                         gt = toks[key_idx["GT"]] if has_GT and key_idx["GT"] < len(toks) else None
 
-                        # missing GT?
                         if gt is None or gt == "." or gt == "./.":
                             if sample_missing_counts is not None:
                                 sample_missing_counts[si] += 1
                             site_missing += 1
                         else:
-                            # Allele balance for heterozygotes
                             if ("0/1" in gt) or ("1/0" in gt) or ("0|1" in gt) or ("1|0" in gt):
-                                # try AB directly
                                 if idx_AB is not None and idx_AB < len(toks):
                                     try:
                                         ab = float(toks[idx_AB])
@@ -196,7 +226,6 @@ class VCFQualityChecker:
                                             ab_deviations.append(abs(ab - 0.5))
                                     except Exception:
                                         pass
-                                # else estimate from AD (ref, alt depths)
                                 elif idx_AD is not None and idx_AD < len(toks):
                                     try:
                                         ad = toks[idx_AD]
@@ -210,7 +239,6 @@ class VCFQualityChecker:
                                     except Exception:
                                         pass
 
-                            # DP/GQ
                             if idx_DP is not None and idx_DP < len(toks):
                                 try:
                                     dp_val = float(toks[idx_DP])
@@ -232,6 +260,7 @@ class VCFQualityChecker:
                 total += 1
 
         metrics: Dict[str, float] = {}
+        metrics["samples"] = float(samples_n)            # ADDED
         metrics["sites_scanned"] = float(total)
         metrics["snps"] = float(snps)
         metrics["indels"] = float(indels)
@@ -240,7 +269,6 @@ class VCFQualityChecker:
         metrics["snp_indel_ratio"] = (snps / indels) if indels else float("inf")
         metrics["titv"] = (ti / tv) if tv else float("inf")
 
-        # missingness
         if site_missing_rates:
             metrics["site_missing_mean"] = float(stats.mean(site_missing_rates))
             metrics["site_missing_p90"] = float(self._percentile(site_missing_rates, 90))
@@ -256,7 +284,6 @@ class VCFQualityChecker:
             metrics["sample_missing_mean"] = 0.0
             metrics["sample_missing_p90"] = 0.0
 
-        # DP / GQ summaries
         for name, arr in (("dp", dp_vals), ("gq", gq_vals)):
             if arr:
                 metrics[f"{name}_median"] = float(stats.median(arr))
@@ -267,11 +294,9 @@ class VCFQualityChecker:
                 metrics[f"{name}_p10"] = 0.0
                 metrics[f"{name}_p90"] = 0.0
 
-        # Allele balance deviation
         metrics["ab_dev_mean"] = float(stats.mean(ab_deviations)) if ab_deviations else 0.0
         metrics["ab_dev_p90"] = float(self._percentile(ab_deviations, 90)) if ab_deviations else 0.0
 
-        # NEW: return distributions for plotting
         dists = {
             "dp": dp_vals,
             "gq": gq_vals,
@@ -281,21 +306,18 @@ class VCFQualityChecker:
         return metrics, dists
 
     def _score_and_recommend(self, m: Dict[str, float]) -> Tuple[float, str, List[str]]:
-        # penalties in [0..1], then weighted sum
         penalties = []
         recs: List[str] = []
 
-        # 1) Ti/Tv
         titv = m["titv"]
         if math.isinf(titv) or titv == 0:
             p = 1.0
             recs.append("Ti/Tv not computable → check SNP calling / ALT parsing.")
         else:
-            p = min(abs(titv - 2.0) / 1.0, 1.0)  # outside ~[1..3] penalized
+            p = min(abs(titv - 2.0) / 1.0, 1.0)
         penalties.append(("TiTv", 10, p))
 
-        # 2) Missingness
-        p_site = min(m["site_missing_mean"] * 5.0, 1.0)   # 0.2 → full penalty
+        p_site = min(m["site_missing_mean"] * 5.0, 1.0)
         p_samp = min(m["sample_missing_mean"] * 5.0, 1.0)
         penalties.append(("SiteMissing", 10, p_site))
         penalties.append(("SampleMissing", 10, p_samp))
@@ -304,21 +326,18 @@ class VCFQualityChecker:
         if m["sample_missing_p90"] > 0.1:
             recs.append("Some samples have high missingness → consider --mind 0.1 and remove worst samples.")
 
-        # 3) SNP/INDEL balance
         snps, indels = m["snps"], m["indels"]
         snp_indel_ratio = m["snp_indel_ratio"]
         if indels == 0:
-            p = 0.3  # small penalty only
+            p = 0.3
         else:
-            p = min(abs(snp_indel_ratio - 3.0) / 2.0, 1.0)  # target ~3 ±2
+            p = min(abs(snp_indel_ratio - 3.0) / 2.0, 1.0)
         penalties.append(("SNP_INDEL", 6, p))
 
-        # 4) Multiallelic ratio
         mar = m["multiallelic_ratio"]
-        p = 0.0 if mar <= 0.1 else min((mar - 0.1) / 0.2, 1.0)  # >0.3 → full penalty
+        p = 0.0 if mar <= 0.1 else min((mar - 0.1) / 0.2, 1.0)
         penalties.append(("Multiallelic", 6, p))
 
-        # 5) DP & GQ
         dp_med = m["dp_median"]
         gq_med = m["gq_median"]
         p_dp = 0.0 if 10 <= dp_med <= 200 else 0.6
@@ -330,21 +349,18 @@ class VCFQualityChecker:
         if gq_med and gq_med < 20:
             recs.append("Low GQ median → consider filtering low GQ genotypes.")
 
-        # 6) Allele balance deviation (het sites)
         ab_dev = m["ab_dev_mean"]
-        p = min(ab_dev / 0.15, 1.0)  # mean |AB-0.5| > 0.15 → heavy penalty
+        p = min(ab_dev / 0.15, 1.0)
         penalties.append(("ABDeviation", 10, p))
         if ab_dev > 0.2:
             recs.append("Heterozygote allele balance is skewed → could indicate contamination or mapping bias.")
 
-        # Compute score
         max_score = 100.0
         total_penalty = sum(w * p for _, w, p in penalties)
         score = max(0.0, max_score - total_penalty)
 
         verdict = "Pass" if score >= 80 else ("Caution" if score >= 60 else "Fail")
 
-        # Generic MAF suggestion
         if snps > 0 and verdict != "Pass":
             recs.append("Try MAF filter around 0.03–0.05 and re-evaluate.")
         return score, verdict, recs

@@ -100,6 +100,8 @@ class GWASApp:
         self.geno_stats_name = 'geno_statistics.pdf'
 
         self.logz = None
+        self._log_fallback_tag = None
+        self._results_body = None
 
         self.sam_threads = None
         self.sam_remove_dups = None
@@ -152,6 +154,36 @@ class GWASApp:
             ("settings", "Settings"),
         ]
 
+    # ---------------- Floating windows ----------------
+    def ensure_log_window(self, show=True):
+        if not dpg.does_item_exist("LogWindow"):
+            with dpg.window(label="Log", tag="LogWindow", width=700, height=420, pos=(80, 80),
+                            no_saved_settings=False, modal=False, no_close=False):
+                if logger:
+                    self.logz = logger.mvLogger(parent="LogWindow")
+                else:
+                    self._log_fallback_tag = dpg.add_input_text(multiline=True, readonly=True, width=-1, height=-1,
+                                                                tag="log_fallback_win")
+        if show:
+            dpg.show_item("LogWindow")
+
+    def ensure_results_window(self, show=True, title="Results"):
+        if not dpg.does_item_exist("ResultsWindow"):
+            with dpg.window(label=title, tag="ResultsWindow", width=1100, height=700, pos=(300, 120),
+                            no_saved_settings=False, modal=False, no_close=False):
+                self._results_body = dpg.add_child_window(tag="results_body", autosize_x=True, autosize_y=True,
+                                                          border=False)
+        else:
+            if title:
+                dpg.configure_item("ResultsWindow", label=title)
+            if not dpg.does_item_exist("results_body"):
+                self._results_body = dpg.add_child_window(tag="results_body", autosize_x=True, autosize_y=True,
+                                                          border=False, parent="ResultsWindow")
+            else:
+                self._results_body = "results_body"
+        if show:
+            dpg.show_item("ResultsWindow")
+
     # ---------------- UI build ----------------
     def setup_gui(self):
         setup_app_chrome(base_size=18)
@@ -161,8 +193,8 @@ class GWASApp:
         apply_theme(dark=True)
 
         with dpg.window(
-            tag="PrimaryWindow",
-            no_title_bar=True, no_move=True, no_resize=True, no_close=True, no_collapse=True, pos=(0, 0)
+                tag="PrimaryWindow",
+                no_title_bar=True, no_move=True, no_resize=True, no_close=True, no_collapse=True, pos=(0, 0)
         ):
             pass
         dpg.set_primary_window("PrimaryWindow", True)
@@ -188,6 +220,16 @@ class GWASApp:
                         self._bind_nav_button_theme(btn, active=False)
                         dpg.add_spacer(height=6)
 
+                    dpg.add_separator()
+                    dpg.add_spacer(height=8)
+                    dpg.add_text("Windows", color=(200, 180, 90))
+                    dpg.add_spacer(height=4)
+                    dpg.add_button(label="Open Log Window", width=-1,
+                                   callback=lambda: self.ensure_log_window(show=True))
+                    dpg.add_spacer(height=4)
+                    dpg.add_button(label="Open Results Window", width=-1,
+                                   callback=lambda: self.ensure_results_window(show=True))
+
                 with dpg.child_window(tag="content_area", width=-1, border=True):
                     self._build_header(parent="content_area", big=True)
                     dpg.add_spacer(height=6)
@@ -197,8 +239,6 @@ class GWASApp:
                     built = build_pages(self, parent="content_area")
                     if isinstance(built, dict):
                         self._pages.update(built)
-
-                    self._build_workspace_tabs(parent="content_area")
 
         self._index_pages_from_ui()
         self.add_log(f"[UI] Pages discovered: {list(self._pages.keys()) or 'NONE'}", warn=not bool(self._pages))
@@ -240,21 +280,8 @@ class GWASApp:
         self.apply_component_themes()
         self._check_cli_versions()
 
-    def _build_workspace_tabs(self, parent="content_area"):
-        dpg.add_spacer(height=8, parent=parent)
-        dpg.add_separator(parent=parent)
-        dpg.add_spacer(height=6, parent=parent)
-
-        with dpg.child_window(parent=parent, tag="panel_tabs_container", height=360, border=True):
-            with dpg.tab_bar(tag="panel_tabs", reorderable=True):
-                with dpg.tab(label="Log", tag="tab_log", closable=False):
-                    if logger:
-                        self.logz = logger.mvLogger(parent="tab_log")
-                    else:
-                        dpg.add_input_text(tag="log_fallback", multiline=True, readonly=True, width=-1, height=-1)
-
-                with dpg.tab(label="Results", tag="tab_results", closable=True):
-                    dpg.add_text("No results yet.", tag="tab_results_placeholder")
+        self.ensure_log_window(show=False)
+        self.ensure_results_window(show=False)
 
     # ----------- nav helpers -----------
     def _nav_click(self, sender, app_data, user_data):
@@ -362,6 +389,7 @@ class GWASApp:
                             tag="select_directory", cancel_callback=self.cancel_callback_directory,
                             width=900, height=540, default_path=self.default_path, modal=True)
         self._file_dialogs.append("select_directory")
+
     # ---------------- header ----------------
     def _build_header(self, parent, big: bool = False):
         with dpg.group(parent=parent, horizontal=True, horizontal_spacing=8):
@@ -495,6 +523,7 @@ class GWASApp:
                     )
                 except Exception as ex:
                     self.add_log(f"[wm] draw failed: {ex}", warn=True)
+
             dpg.set_frame_callback(dpg.get_frame_count() + 1, _do)
         except Exception as e:
             self.add_log(f"[wm] refresh failed: {e}", warn=True)
@@ -523,6 +552,7 @@ class GWASApp:
 
     # ---------------- misc helpers ----------------
     def add_log(self, message, warn=False, error=False):
+        self.ensure_log_window(show=False)
         if self.logz:
             if warn:
                 self.logz.log_warning(message)
@@ -533,9 +563,9 @@ class GWASApp:
         else:
             prefix = "[WARN]" if warn else "[ERROR]" if error else "[INFO]"
             txt = f"{prefix} {message}\n"
-            if dpg.does_item_exist("log_fallback"):
-                old = dpg.get_value("log_fallback") or ""
-                dpg.set_value("log_fallback", old + txt)
+            if self._log_fallback_tag and dpg.does_item_exist(self._log_fallback_tag):
+                old = dpg.get_value(self._log_fallback_tag) or ""
+                dpg.set_value(self._log_fallback_tag, old + txt)
             else:
                 print(prefix, message)
 
@@ -578,8 +608,6 @@ class GWASApp:
         vcf_path, current_path = self.get_selection_path(self.vcf_app_data)
         if not vcf_path:
             return
-        if dpg.does_item_exist("convert_vcf_btn"):
-            dpg.configure_item("convert_vcf_btn", enabled=True)
         dpg.configure_item("file_dialog_variants", default_path=current_path or self.default_path)
         self.add_log('VCF Selected: ' + vcf_path)
         name = self._fmt_name(vcf_path)
@@ -865,29 +893,43 @@ class GWASApp:
         self.add_log('Running VCF Quality Check...')
         report = self.vcf_qc_checker.evaluate(vcf_path, log_fn=self.add_log)
 
-        if dpg.does_item_exist("tab_results"):
-            dpg.delete_item("tab_results", children_only=True)
+        self.ensure_results_window(show=True, title="VCF QC Results")
+        dpg.delete_item(self._results_body, children_only=True)
 
-        dpg.add_text(f"VCF-QAScore: {report.score:.1f}   |   Verdict: {report.verdict}", parent="tab_results")
+        with dpg.group(parent=self._results_body, horizontal=True, horizontal_spacing=8):
+            dpg.add_button(label="Export Results (copy files)", callback=lambda: dpg.show_item("select_directory"))
+            dpg.add_button(label="Save QC Report (.txt)", callback=lambda: self._save_qc_report(vcf_path, report))
+
+        dpg.add_spacer(height=10, parent=self._results_body)
+
+        dpg.add_text(
+            f"VCF-QAScore: {report.score:.1f}   |   Verdict: {report.verdict}",
+            parent=self._results_body
+        )
+        dpg.add_text(
+            f"Samples: {int(report.metrics.get('samples', 0))}",
+            parent=self._results_body
+        )
+
         if report.hard_fail_reasons:
-            dpg.add_spacer(height=4, parent="tab_results")
-            dpg.add_text("Hard fail reasons:", parent="tab_results")
+            dpg.add_spacer(height=4, parent=self._results_body)
+            dpg.add_text("Hard fail reasons:", parent=self._results_body)
             for r in report.hard_fail_reasons:
-                dpg.add_text(f"- {r}", parent="tab_results")
+                dpg.add_text(f"- {r}", parent=self._results_body)
             return
 
-        dpg.add_spacer(height=10, parent="tab_results")
-        dpg.add_text("Recommendations:", parent="tab_results")
+        dpg.add_spacer(height=10, parent=self._results_body)
+        dpg.add_text("Recommendations:", parent=self._results_body)
         if report.recommendations:
             for r in report.recommendations:
-                dpg.add_text(f"- {r}", parent="tab_results")
+                dpg.add_text(f"- {r}", parent=self._results_body)
         else:
-            dpg.add_text("- No specific recommendations.", parent="tab_results")
+            dpg.add_text("- No specific recommendations.", parent=self._results_body)
 
-        dpg.add_spacer(height=10, parent="tab_results")
-        dpg.add_text("Metrics:", parent="tab_results")
+        dpg.add_spacer(height=10, parent=self._results_body)
+        dpg.add_text("Metrics:", parent=self._results_body)
         with dpg.table(row_background=True, borders_innerH=True, borders_outerH=True,
-                       borders_innerV=True, borders_outerV=True, parent="tab_results"):
+                       borders_innerV=True, borders_outerV=True, parent=self._results_body):
             dpg.add_table_column(label="Metric")
             dpg.add_table_column(label="Value")
             for k, v in sorted(report.metrics.items()):
@@ -895,9 +937,9 @@ class GWASApp:
                     dpg.add_text(str(k))
                     dpg.add_text(f"{v:.6g}" if isinstance(v, (int, float)) else str(v))
 
-        dpg.add_spacer(height=10, parent="tab_results")
-        dpg.add_text("QC Plots:", parent="tab_results")
-        with dpg.tab_bar(parent="tab_results") as qc_tabbar:
+        dpg.add_spacer(height=10, parent=self._results_body)
+        dpg.add_text("QC Plots:", parent=self._results_body)
+        with dpg.tab_bar(parent=self._results_body) as qc_tabbar:
             d = report.dists or {}
             self._add_hist_plot(qc_tabbar, "Depth (DP)", d.get("dp", []), bins=30,
                                 p10=report.metrics.get("dp_p10"),
@@ -935,14 +977,14 @@ class GWASApp:
             counts[idx] += 1
         centers = [mn + (i + 0.5) * width for i in range(bins)]
         with dpg.tab(label=title, parent=parent):
-            with dpg.plot(label=title, height=380, width=720, anti_aliased=True):
+            with dpg.plot(label=title, height=380, width=720) as plot_tag:
                 x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="Value")
                 y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="Count")
                 dpg.add_bar_series(centers, counts, parent=y_axis, label="Histogram")
                 for val, lab in [(p10, "P10"), (p50, "P50"), (p90, "P90")]:
                     if val is not None:
                         try:
-                            dpg.add_vline_series([float(val)], parent=y_axis, label=lab)
+                            dpg.add_drag_line(parent=plot_tag, default_value=float(val), vertical=True, label=lab)
                         except Exception:
                             pass
 
@@ -1035,7 +1077,8 @@ class GWASApp:
                 bed, pheno = pstutil.intersect_apply([bed, pheno])
                 bed_fixed = self.gwas.filter_out_missing(bed)
 
-                self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}", warn=True)
+                self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}",
+                             warn=True)
                 self.add_log('Starting Analysis, this might take a while...')
 
                 if self.algorithm in ('FaST-LMM', 'Linear regression'):
@@ -1200,29 +1243,38 @@ class GWASApp:
             self.add_log(f'Unexpected error in Genomic Prediction: {e}', error=True)
 
     def _show_validation_plot(self, plot_path: str):
-        if not dpg.does_item_exist("tab_results"):
-            return
-        dpg.delete_item("tab_results", children_only=True)
+        self.ensure_results_window(show=True, title="Validation Plots")
+        dpg.delete_item(self._results_body, children_only=True)
         try:
             w, h, c, data = dpg.load_image(plot_path)
             with dpg.texture_registry(show=False):
                 dpg.add_static_texture(width=w, height=h, default_value=data, tag="gp_val_plot_tag")
-            dpg.add_text("Validation Correlation Plots", parent="tab_results")
-            dpg.add_spacer(height=6, parent="tab_results")
+            dpg.add_text("Validation Correlation Plots", parent=self._results_body)
+            dpg.add_spacer(height=6, parent=self._results_body)
             width = min(1200, w)
-            dpg.add_image(texture_tag="gp_val_plot_tag", parent="tab_results",
+            dpg.add_image(texture_tag="gp_val_plot_tag", parent=self._results_body,
                           width=width, height=int(h * (width / w)))
         except Exception as ex:
             self.add_log(f"[VAL] Could not load validation plot: {ex}", warn=True)
 
-    def show_results_window(self, df, algorithm, genomic_predict):
-        if not dpg.does_item_exist("tab_results"):
-            return
-        dpg.delete_item("tab_results", children_only=True)
+    def _save_qc_report(self, vcf_path: str, report):
+        try:
+            base = os.path.splitext(vcf_path)[0]
+            out_path = f"{base}_qc_report.txt"
+            text = self.vcf_qc_checker.to_text(report, vcf_path=vcf_path)
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            self.add_log(f"[OK] QC report saved: {out_path}")
+        except Exception as e:
+            self.add_log(f"[ERROR] Could not save QC report: {e}", error=True)
 
-        dpg.add_button(label="Export Results", parent="tab_results",
+    def show_results_window(self, df, algorithm, genomic_predict):
+        self.ensure_results_window(show=True, title="Results")
+        dpg.delete_item(self._results_body, children_only=True)
+
+        dpg.add_button(label="Export Results", parent=self._results_body,
                        callback=lambda: dpg.show_item("select_directory"))
-        dpg.add_spacer(height=10, parent="tab_results")
+        dpg.add_spacer(height=10, parent=self._results_body)
 
         if genomic_predict:
             w1, h1, c1, data1 = dpg.load_image(self.gp_plot_name)
@@ -1232,7 +1284,7 @@ class GWASApp:
             with dpg.texture_registry(show=False):
                 dpg.add_static_texture(width=w2, height=h2, default_value=data2, tag="ba_tag2")
 
-            with dpg.tab_bar(label='tabbar_results_gp', parent="tab_results"):
+            with dpg.tab_bar(label='tabbar_results_gp', parent=self._results_body):
                 with dpg.tab(label="Genomic Prediction Results"):
                     df = df[['ID1', 'BED_ID2_x', 'Mean_Predicted_Value', 'Pheno_Value', 'Difference']]
                     df.columns = ['FID', 'IID', 'Predicted_Value', 'Pheno_Value', 'Difference']
@@ -1256,7 +1308,7 @@ class GWASApp:
             with dpg.texture_registry(show=False):
                 dpg.add_static_texture(width=w, height=h, default_value=data, tag="manhatten_tag")
 
-            with dpg.tab_bar(label='tabbar_results_gwas', parent="tab_results"):
+            with dpg.tab_bar(label='tabbar_results_gwas', parent=self._results_body):
                 with dpg.tab(label="Manhattan Plot"):
                     if algorithm in ("FaST-LMM", "Linear regression"):
                         dpg.add_image(texture_tag="manhatten_tag", tag="manhatten_image", width=950, height=400)
