@@ -18,6 +18,7 @@ from pysnptools.snpreader import Bed, Pheno
 import pysnptools.util as pstutil
 from bcftools_utils import BCFtools, BCFtoolsError
 from samtools_utils import Samtools, SamtoolsError
+from PlantVarFilter.batch_gwas import run_batch_gwas_for_all_traits
 
 try:
     from variant_caller_utils import VariantCaller, VariantCallerError
@@ -151,6 +152,7 @@ class GWASApp:
             ("plink", "Convert to PLINK"),
             ("gwas", "GWAS Analysis"),
             ("gp", "Genomic Prediction"),
+            ("batch", "Batch GWAS"),
             ("settings", "Settings"),
         ]
 
@@ -1241,6 +1243,72 @@ class GWASApp:
 
         except Exception as e:
             self.add_log(f'Unexpected error in Genomic Prediction: {e}', error=True)
+
+    def run_batch_gwas_ui(self, s, data):
+        try:
+            bed_path = self._get_appdata_path_safe(self.bed_app_data)
+            pheno_path = self._get_appdata_path_safe(self.pheno_app_data)
+            cov_path = self._get_appdata_path_safe(self.cov_app_data)
+            if not bed_path or not pheno_path:
+                self.add_log("Please select BED and phenotype file first (Batch GWAS).", error=True)
+                return
+
+            algorithm = dpg.get_value(self.batch_algo) if self.batch_algo and dpg.does_item_exist(
+                self.batch_algo) else "FaST-LMM"
+
+            nr_jobs = int(dpg.get_value(self.nr_jobs)) if self.nr_jobs and dpg.does_item_exist(self.nr_jobs) else -1
+            gb_goal = int(dpg.get_value(self.gb_goal)) if self.gb_goal and dpg.does_item_exist(self.gb_goal) else 0
+            train_size = float(
+                dpg.get_value(self.train_size_set) or 70) / 100.0 if self.train_size_set and dpg.does_item_exist(
+                self.train_size_set) else 0.7
+            estimators = int(dpg.get_value(self.estim_set) or 200) if self.estim_set and dpg.does_item_exist(
+                self.estim_set) else 200
+            max_depth = int(dpg.get_value(self.max_dep_set) or 3) if self.max_dep_set and dpg.does_item_exist(
+                self.max_dep_set) else 3
+            model_nr = int(dpg.get_value(self.model_nr) or 1) if self.model_nr and dpg.does_item_exist(
+                self.model_nr) else 1
+            aggregation_method = dpg.get_value(
+                self.aggregation_method) if self.aggregation_method and dpg.does_item_exist(
+                self.aggregation_method) else "sum"
+            snp_limit = dpg.get_value(self.snp_limit) if self.snp_limit and dpg.does_item_exist(self.snp_limit) else ""
+            snp_limit = int(snp_limit) if str(snp_limit).strip().isdigit() else None
+
+            out_dir = os.getcwd()
+
+            self.add_log(f"[Batch-GWAS] Starting on: {os.path.basename(pheno_path)} using {algorithm}")
+            result = run_batch_gwas_for_all_traits(
+                gwas=self.gwas, helper=self.helper,
+                bed_path=bed_path, pheno_path=pheno_path, cov_path=cov_path, algorithm=algorithm,
+                out_dir=out_dir, log_fn=self.add_log, nr_jobs=nr_jobs, gb_goal=gb_goal,
+                train_size=train_size, estimators=estimators, model_nr=model_nr,
+                max_depth=max_depth, aggregation_method=aggregation_method, snp_limit=snp_limit
+            )
+            summary_csv = result["summary_csv"]
+
+            self.ensure_results_window(show=True, title="Batch GWAS – Summary")
+            dpg.delete_item(self._results_body, children_only=True)
+            dpg.add_button(label="Export Results", parent=self._results_body,
+                           callback=lambda: dpg.show_item("select_directory"))
+            dpg.add_spacer(height=10, parent=self._results_body)
+
+            import pandas as pd
+            try:
+                df = pd.read_csv(summary_csv)
+                with dpg.table(row_background=True, borders_innerH=True, borders_innerV=True,
+                               borders_outerH=True, borders_outerV=True, parent=self._results_body):
+                    for c in df.columns:
+                        dpg.add_table_column(label=str(c))
+                    for _, r in df.iterrows():
+                        with dpg.table_row():
+                            for c in df.columns:
+                                dpg.add_text(str(r[c]))
+            except Exception as e:
+                self.add_log(f"[Batch-GWAS] Could not render summary table: {e}", warn=True)
+                dpg.add_text(f"Summary saved here: {summary_csv}", parent=self._results_body)
+
+            self.add_log(f"[Batch-GWAS] Done. Summary: {summary_csv}")
+        except Exception as e:
+            self.add_log(f"[Batch-GWAS] Error: {e}", error=True)
 
     def _show_validation_plot(self, plot_path: str):
         self.ensure_results_window(show=True, title="Validation Plots")
