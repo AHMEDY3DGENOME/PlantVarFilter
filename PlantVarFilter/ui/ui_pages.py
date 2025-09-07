@@ -450,6 +450,68 @@ def page_genomic_prediction(app, parent):
                 app._primary_buttons.append(gp_btn)
     return "page_gp"
 
+def page_batch_gwas(app, parent):
+    with dpg.group(parent=parent, show=False, tag="page_batch"):
+        dpg.add_text("\nBatch GWAS for all traits in a phenotype file (FID IID + multiple traits).", indent=10)
+        dpg.add_spacer(height=10)
+        with dpg.group(horizontal=True, horizontal_spacing=60):
+            with dpg.group():
+                geno_btn = dpg.add_button(
+                    label="Choose a BED file (SNP or SV)",
+                    callback=lambda: dpg.show_item("file_dialog_bed"),
+                    width=240,
+                )
+                app._secondary_buttons.append(geno_btn)
+                dpg.add_text("", tag="batch_bed_path_lbl", wrap=520)
+
+                dpg.add_spacer(height=6)
+                pheno_btn = dpg.add_button(
+                    label="Choose a multi-trait phenotype file",
+                    callback=lambda: dpg.show_item("file_dialog_pheno"),
+                    width=240,
+                )
+                app._secondary_buttons.append(pheno_btn)
+                dpg.add_text("", tag="batch_pheno_path_lbl", wrap=520)
+
+                dpg.add_spacer(height=6)
+                cov_btn = dpg.add_button(
+                    label="Choose covariates (optional)",
+                    callback=lambda: dpg.show_item("file_dialog_cov"),
+                    width=240,
+                )
+                app._secondary_buttons.append(cov_btn)
+                dpg.add_text("", tag="batch_cov_path_lbl", wrap=520)
+
+            with dpg.group():
+                app.batch_algo = dpg.add_combo(
+                    label="Algorithm",
+                    items=[
+                        "FaST-LMM",
+                        "Linear regression",
+                        "Ridge Regression",
+                        "Random Forest (AI)",
+                        "XGBoost (AI)",
+                    ],
+                    width=260,
+                    default_value="FaST-LMM",
+                )
+                app._inputs.append(app.batch_algo)
+
+                dpg.add_spacer(height=8)
+                dpg.add_text("Uses settings from 'Settings' page (trees, depth, train %, jobs ...).")
+
+                dpg.add_spacer(height=12)
+                run_btn = dpg.add_button(
+                    label="Run Batch GWAS",
+                    callback=app.run_batch_gwas_ui,
+                    width=220,
+                    height=38,
+                )
+                app._primary_buttons.append(run_btn)
+
+    return "page_batch"
+
+
 
 def page_settings(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_settings"):
@@ -616,5 +678,6 @@ def build_pages(app, parent):
     pages["plink"] = page_convert_plink(app, parent)
     pages["gwas"] = page_gwas(app, parent)
     pages["gp"] = page_genomic_prediction(app, parent)
+    pages["batch"] = page_batch_gwas(app, parent)
     pages["settings"] = page_settings(app, parent)
     return pages
