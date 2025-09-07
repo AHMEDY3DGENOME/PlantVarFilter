@@ -409,8 +409,8 @@ class GWASApp:
             dpg.add_text("PlantVarFilter", color=(210, 230, 210) if self.night_mode else (30, 45, 35))
             if big:
                 dpg.add_spacer(width=10)
-                dpg.add_text("GWAS, Genomic Prediction, and VCF Utilities",
-                             color=(190, 175, 95) if self.night_mode else (90, 120, 70))
+                dpg.add_text("Development by Ye-Lab, PKU-IAAS, Ahmed Yassin",
+                             color=(220, 200, 120) if self.night_mode else (40, 90, 40))
 
     # ---------------- navigation ----------------
     def _bind_nav_button_theme(self, btn, active: bool):

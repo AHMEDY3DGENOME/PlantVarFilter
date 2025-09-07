@@ -331,7 +331,7 @@ def page_convert_plink(app, parent):
                     user_data={"maf": maf_input, "geno": geno_input},
                     width=160,
                     height=36,
-                    enabled=False,
+                    enabled=True,
                 )
                 app._primary_buttons.append(convert_btn)
     return "page_plink"
