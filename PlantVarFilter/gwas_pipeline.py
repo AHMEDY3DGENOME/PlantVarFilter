@@ -289,6 +289,11 @@ class GWAS:
             df_lmm_gwas["Chr"] = df_lmm_gwas["Chr"].apply(lambda x: reversed_chrom_map[x])
 
         df_lmm_gwas.to_csv(gwas_result_name, index=False)
+        TOP_N = 50
+        if "PValue" in df_lmm_gwas.columns:
+            top_snps = df_lmm_gwas.nsmallest(TOP_N, "PValue")
+            # top_snps.to_csv("gwas_top_snp.csv", index=False)
+            add_log(f"Top {TOP_N} SNPs Saved to gwas_top_snps.csv")
         t3 = round((time.time() - t1) / 60, 2)
         add_log('Final run time (minutes): ' + str(t3))
         return df_lmm_gwas, df_plot

@@ -2,6 +2,7 @@
 import os
 import shutil
 import subprocess
+import time
 import dearpygui.dearpygui as dpg
 
 try:
@@ -51,7 +52,7 @@ class GWASApp:
         self._primary_buttons = []
         self._secondary_buttons = []
         self._file_dialogs = []
-        self.default_path = os.path.expanduser("~")
+        self.default_path = "/"  # start file dialogs from filesystem root
         self.night_mode = True
 
         self._wm_alpha = 48
@@ -90,6 +91,8 @@ class GWASApp:
         self.sam_out_last = None
         self.vc_out_last = None
 
+        # Output paths (bound to workspace folder)
+        self._workspace_dir = os.getcwd()
         self.gwas_result_name = "gwas_results.csv"
         self.gwas_result_name_top = "gwas_results_top10000.csv"
         self.genomic_predict_name = "genomic_prediction_results.csv"
@@ -97,8 +100,10 @@ class GWASApp:
         self.qq_plot_name = "qq_plot.png"
         self.gp_plot_name = "Bland_Altman_plot.png"
         self.gp_plot_name_scatter = "GP_scatter_plot.png"
-        self.pheno_stats_name = 'pheno_statistics.pdf'
-        self.geno_stats_name = 'geno_statistics.pdf'
+        self.pheno_stats_name = "pheno_statistics.pdf"
+        self.geno_stats_name = "geno_statistics.pdf"
+        self.gwas_top_snps_name = "gwas_top_snps.csv"
+        self._rebind_output_paths()
 
         self.logz = None
         self._log_fallback_tag = None
@@ -156,6 +161,54 @@ class GWASApp:
             ("settings", "Settings"),
         ]
 
+        # Flag to avoid DPG calls before context exists
+        self._gui_ready = False
+
+    # ---------- workspace/output binding ----------
+    def _set_workspace_dir(self, directory: str):
+        """Set the workspace folder and rebind all output file paths into it."""
+        try:
+            if not directory:
+                directory = os.getcwd()
+            os.makedirs(directory, exist_ok=True)
+            self._workspace_dir = directory
+            self._rebind_output_paths()
+            if getattr(self, "_gui_ready", False):
+                self.add_log(f"[WS] Workspace set to: {directory}")
+        except Exception as e:
+            if getattr(self, "_gui_ready", False):
+                self.add_log(f"[WS] Failed to set workspace dir: {e}", warn=True)
+
+    def _rebind_output_paths(self):
+        def _mk(name): return os.path.join(self._workspace_dir, name)
+        self.gwas_result_name = _mk("gwas_results.csv")
+        self.gwas_result_name_top = _mk("gwas_results_top10000.csv")
+        self.genomic_predict_name = _mk("genomic_prediction_results.csv")
+        self.manhatten_plot_name = _mk("manhatten_plot.png")
+        self.qq_plot_name = _mk("qq_plot.png")
+        self.gp_plot_name = _mk("Bland_Altman_plot.png")
+        self.gp_plot_name_scatter = _mk("GP_scatter_plot.png")
+        self.pheno_stats_name = _mk("pheno_statistics.pdf")
+        self.geno_stats_name = _mk("geno_statistics.pdf")
+        self.gwas_top_snps_name = _mk("gwas_top_snps.csv")
+
+    # ---------- safe image loader ----------
+    def _safe_load_image(self, path, texture_tag):
+        try:
+            if not path or not os.path.exists(path):
+                if getattr(self, "_gui_ready", False):
+                    self.add_log(f"[IMG] Missing image: {path}", warn=True)
+                return None
+            w, h, c, data = dpg.load_image(path)
+            if not dpg.does_item_exist(texture_tag):
+                with dpg.texture_registry(show=False):
+                    dpg.add_static_texture(width=w, height=h, default_value=data, tag=texture_tag)
+            return (w, h)
+        except Exception as e:
+            if getattr(self, "_gui_ready", False):
+                self.add_log(f"[IMG] Failed to load image '{path}': {e}", error=True)
+            return None
+
     # ---------------- Floating windows ----------------
     def ensure_log_window(self, show=True):
         if not dpg.does_item_exist("LogWindow"):
@@ -188,14 +241,12 @@ class GWASApp:
 
     # ---------------- UI build ----------------
     def setup_gui(self):
-        # Base app chrome and themes
         setup_app_chrome(base_size=20)
         build_dark_theme()
         build_light_theme()
         build_component_themes()
         apply_theme(dark=True)
 
-        # Load header fonts once (optional)
         self._font_title = None
         self._font_subtitle = None
         try:
@@ -211,22 +262,18 @@ class GWASApp:
             self._font_title = None
             self._font_subtitle = None
 
-        # Primary window
         with dpg.window(
-                tag="PrimaryWindow",
-                no_title_bar=True, no_move=True, no_resize=True, no_close=True, no_collapse=True, pos=(0, 0)
+            tag="PrimaryWindow",
+            no_title_bar=True, no_move=True, no_resize=True, no_close=True, no_collapse=True, pos=(0, 0)
         ):
             pass
         dpg.set_primary_window("PrimaryWindow", True)
 
-        # File dialogs
         self._build_file_dialogs()
 
-        # Workspace
         with dpg.window(label="Workspace", tag="WorkspaceWindow", width=1600, height=1000, pos=(10, 10)):
             with dpg.group(horizontal=True, horizontal_spacing=12):
 
-                # Sidebar
                 with dpg.child_window(tag="Sidebar", width=240, border=True):
                     dpg.add_spacer(height=8)
                     self._build_header(parent="Sidebar")
@@ -253,7 +300,6 @@ class GWASApp:
                     dpg.add_button(label="Open Results Window", width=-1,
                                    callback=lambda: self.ensure_results_window(show=True))
 
-                # Content area
                 with dpg.child_window(tag="content_area", width=-1, border=True):
                     self._build_header(parent="content_area", big=True)
                     dpg.add_spacer(height=6)
@@ -264,11 +310,9 @@ class GWASApp:
                     if isinstance(built, dict):
                         self._pages.update(built)
 
-        # Discover pages
         self._index_pages_from_ui()
         self.add_log(f"[UI] Pages discovered: {list(self._pages.keys()) or 'NONE'}", warn=not bool(self._pages))
 
-        # Settings callbacks
         settings_cbs = {
             "settings_dark_toggle": self.toggle_theme,
             "settings_font_scale": self._on_font_scale_change,
@@ -278,10 +322,8 @@ class GWASApp:
             if dpg.does_item_exist(tag):
                 dpg.set_item_callback(tag, cb)
 
-        # Tooltips
         self._build_tooltips()
 
-        # File dialog callbacks
         cb_map = {
             "file_dialog_vcf": self.callback_vcf,
             "file_dialog_variants": self.callback_variants,
@@ -299,21 +341,20 @@ class GWASApp:
             if dpg.does_item_exist(tag):
                 dpg.set_item_callback(tag, fn)
 
-        # Hide all pages initially
         for tag in self._pages.values():
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=False)
 
-        # Default page
         self.show_page("pre_sam")
 
-        # Themes & version checks
         self.apply_component_themes()
         self._check_cli_versions()
 
-        # Lazy-create floating windows
         self.ensure_log_window(show=False)
         self.ensure_results_window(show=False)
+
+        # mark GUI as ready (safe to log and load images)
+        self._gui_ready = True
 
     # ----------- nav helpers -----------
     def _nav_click(self, sender, app_data, user_data):
@@ -349,88 +390,146 @@ class GWASApp:
 
     # ---------------- dialogs ----------------
     def _build_file_dialogs(self):
-        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
-                             file_count=3, tag="file_dialog_vcf", width=920, height=560,
-                             default_path=self.default_path, modal=True):
-            dpg.add_file_extension("Source files (*.vcf *.gz){.vcf,.gz}", color=(255, 255, 0, 255))
-        self._file_dialogs.append("file_dialog_vcf")
+        """Create plain file dialogs (no quickbar/buttons)."""
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
-                             file_count=3, tag="file_dialog_variants", width=920, height=560,
-                             default_path=self.default_path, modal=True):
-            dpg.add_file_extension("Text files (*.txt *.csv){.txt,.csv}", color=(255, 255, 0, 255))
-            dpg.add_file_extension(".*")
-        self._file_dialogs.append("file_dialog_variants")
+        def _new_dialog(tag: str, file_count: int, exts: list, directory_selector: bool = False):
+            with dpg.file_dialog(
+                    directory_selector=directory_selector,
+                    show=False,
+                    callback=None,
+                    file_count=file_count,
+                    tag=tag,
+                    width=980,
+                    height=600,
+                    default_path=self.default_path,  # start at HOME
+                    modal=True
+            ):
+                for label, color in exts:
+                    dpg.add_file_extension(label, color=color)
+            self._file_dialogs.append(tag)
+            try:
+                dpg.bind_item_theme(tag, "theme_dialog")
+            except Exception:
+                pass
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
-                             file_count=3, tag="file_dialog_pheno", width=920, height=560,
-                             default_path=self.default_path, modal=True):
-            dpg.add_file_extension("Text files (*.txt *.csv){.txt,.csv}", color=(255, 255, 0, 255))
-            dpg.add_file_extension(".*")
-        self._file_dialogs.append("file_dialog_pheno")
+        # VCF
+        _new_dialog(
+            tag="file_dialog_vcf",
+            file_count=3,
+            exts=[("Source files (*.vcf *.gz){.vcf,.gz}", (255, 255, 0, 255))]
+        )
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
-                             file_count=3, tag="file_dialog_cov", width=920, height=560,
-                             default_path=self.default_path, modal=True):
-            dpg.add_file_extension("Text files (*.txt *.csv){.txt,.csv}", color=(255, 255, 0, 255))
-            dpg.add_file_extension(".*")
-        self._file_dialogs.append("file_dialog_cov")
+        # IDs list
+        _new_dialog(
+            tag="file_dialog_variants",
+            file_count=3,
+            exts=[
+                ("Text files (*.txt *.csv){.txt,.csv}", (255, 255, 0, 255)),
+                (".*", (200, 200, 200, 255)),
+            ]
+        )
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
-                             file_count=3, tag="file_dialog_bed", width=920, height=560,
-                             default_path=self.default_path, modal=True):
-            dpg.add_file_extension(".bed", color=(255, 150, 150, 255))
-            dpg.add_file_extension(".*")
-        self._file_dialogs.append("file_dialog_bed")
+        # Phenotype
+        _new_dialog(
+            tag="file_dialog_pheno",
+            file_count=3,
+            exts=[
+                ("Text files (*.txt *.csv){.txt,.csv}", (255, 255, 0, 255)),
+                (".*", (200, 200, 200, 255)),
+            ]
+        )
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
-                             file_count=1, tag="file_dialog_blacklist", width=920, height=560,
-                             default_path=self.default_path, modal=True):
-            dpg.add_file_extension(".bed", color=(255, 200, 150, 255))
-            dpg.add_file_extension(".*")
-        self._file_dialogs.append("file_dialog_blacklist")
+        # Covariates
+        _new_dialog(
+            tag="file_dialog_cov",
+            file_count=3,
+            exts=[
+                ("Text files (*.txt *.csv){.txt,.csv}", (255, 255, 0, 255)),
+                (".*", (200, 200, 200, 255)),
+            ]
+        )
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
-                             file_count=1, tag="file_dialog_fasta", width=920, height=560,
-                             default_path=self.default_path, modal=True):
-            dpg.add_file_extension("Reference (*.fa *.fasta *.fa.gz){.fa,.fasta,.fa.gz}", color=(150, 200, 255, 255))
-        self._file_dialogs.append("file_dialog_fasta")
+        # PLINK .bed
+        _new_dialog(
+            tag="file_dialog_bed",
+            file_count=3,
+            exts=[
+                (".bed", (255, 150, 150, 255)),
+                (".*", (200, 200, 200, 255)),
+            ]
+        )
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
-                             file_count=1, tag="file_dialog_bam", width=920, height=560,
-                             default_path=self.default_path, modal=True):
-            dpg.add_file_extension(".bam", color=(255, 180, 120, 255))
-            dpg.add_file_extension(".*")
-        self._file_dialogs.append("file_dialog_bam")
+        # Blacklist/regions
+        _new_dialog(
+            tag="file_dialog_blacklist",
+            file_count=1,
+            exts=[
+                (".bed", (255, 200, 150, 255)),
+                (".*", (200, 200, 200, 255)),
+            ]
+        )
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
-                             file_count=1, tag="file_dialog_bam_vc", width=920, height=560,
-                             default_path=self.default_path, modal=True):
-            dpg.add_file_extension(".bam", color=(255, 180, 120, 255))
-            dpg.add_file_extension(".*")
-        self._file_dialogs.append("file_dialog_bam_vc")
+        # FASTA
+        _new_dialog(
+            tag="file_dialog_fasta",
+            file_count=1,
+            exts=[("Reference (*.fa *.fasta *.fa.gz){.fa,.fasta,.fa.gz}", (150, 200, 255, 255))]
+        )
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=None,
-                             file_count=1, tag="file_dialog_bamlist", width=920, height=560,
-                             default_path=self.default_path, modal=True):
-            dpg.add_file_extension("BAM list (*.list){.list}", color=(255, 230, 140, 255))
-            dpg.add_file_extension(".*")
-        self._file_dialogs.append("file_dialog_bamlist")
+        # BAM (samtools preprocess)
+        _new_dialog(
+            tag="file_dialog_bam",
+            file_count=1,
+            exts=[
+                (".bam", (255, 180, 120, 255)),
+                (".*", (200, 200, 200, 255)),
+            ]
+        )
 
-        dpg.add_file_dialog(directory_selector=True, show=False, callback=None,
-                            tag="select_directory", cancel_callback=self.cancel_callback_directory,
-                            width=900, height=540, default_path=self.default_path, modal=True)
+        # BAM (variant calling)
+        _new_dialog(
+            tag="file_dialog_bam_vc",
+            file_count=1,
+            exts=[
+                (".bam", (255, 180, 120, 255)),
+                (".*", (200, 200, 200, 255)),
+            ]
+        )
+
+        # BAM list (-b)
+        _new_dialog(
+            tag="file_dialog_bamlist",
+            file_count=1,
+            exts=[
+                ("BAM list (*.list){.list}", (255, 230, 140, 255)),
+                (".*", (200, 200, 200, 255)),
+            ]
+        )
+
+        # Choose output folder (directory selector)
+        with dpg.file_dialog(
+                directory_selector=True,
+                show=False,
+                callback=None,
+                tag="select_directory",
+                cancel_callback=self.cancel_callback_directory,
+                width=980,
+                height=600,
+                default_path=self.default_path,
+                modal=True
+        ):
+            pass
         self._file_dialogs.append("select_directory")
+        try:
+            dpg.bind_item_theme("select_directory", "theme_dialog")
+        except Exception:
+            pass
 
     # ---------------- header ----------------
     def _build_header(self, parent, big: bool = False):
         with dpg.group(parent=parent, horizontal=True, horizontal_spacing=8):
             logo_path = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
-            if os.path.exists(logo_path):
-                w, h, c, data = dpg.load_image(logo_path)
-                if not dpg.does_item_exist("plant_logo_tex"):
-                    with dpg.texture_registry(show=False):
-                        dpg.add_static_texture(width=w, height=h, default_value=data, tag="plant_logo_tex")
+            if self._safe_load_image(logo_path, "plant_logo_tex"):
                 dpg.add_image("plant_logo_tex", width=40 if not big else 52, height=40 if not big else 52)
             else:
                 dl = dpg.add_drawlist(width=40 if not big else 52, height=40 if not big else 52)
@@ -441,8 +540,7 @@ class GWASApp:
             dpg.add_text("PlantVarFilter", color=(210, 230, 210) if self.night_mode else (30, 45, 35))
             if big:
                 dpg.add_spacer(width=10)
-                dpg.add_text("",
-                             color=(220, 200, 120) if self.night_mode else (40, 90, 40))
+                dpg.add_text("", color=(220, 200, 120) if self.night_mode else (40, 90, 40))
 
     # ---------------- navigation ----------------
     def _bind_nav_button_theme(self, btn, active: bool):
@@ -651,6 +749,7 @@ class GWASApp:
         vcf_path, current_path = self.get_selection_path(self.vcf_app_data)
         if not vcf_path:
             return
+        self._set_workspace_dir(os.path.dirname(vcf_path))
         dpg.configure_item("file_dialog_variants", default_path=current_path or self.default_path)
         self.add_log('VCF Selected: ' + vcf_path)
         name = self._fmt_name(vcf_path)
@@ -663,6 +762,7 @@ class GWASApp:
             bed_path, current_path = self.get_selection_path(self.bed_app_data)
             if not bed_path:
                 return
+            self._set_workspace_dir(os.path.dirname(bed_path))
             dpg.configure_item("file_dialog_cov", default_path=current_path or self.default_path)
             dpg.configure_item("file_dialog_pheno", default_path=current_path or self.default_path)
             self.add_log('BED file Selected: ' + bed_path)
@@ -739,6 +839,7 @@ class GWASApp:
             bam_path, _ = self.get_selection_path(self.bam_app_data)
             if not bam_path:
                 return
+            self._set_workspace_dir(os.path.dirname(bam_path))
             self.add_log('BAM Selected: ' + bam_path)
             self._set_text("sam_bam_path_lbl", self._fmt_name(bam_path))
         except Exception:
@@ -750,6 +851,7 @@ class GWASApp:
             bam_path, _ = self.get_selection_path(self.bam_vc_app_data)
             if not bam_path:
                 return
+            self._set_workspace_dir(os.path.dirname(bam_path))
             self.add_log('VC-BAM Selected: ' + bam_path)
             self._set_text("vc_bam_path_lbl", self._fmt_name(bam_path))
         except Exception:
@@ -767,17 +869,34 @@ class GWASApp:
             self.add_log('Invalid BAM-list file', error=True)
 
     def callback_save_results(self, s, app_data):
-        self.results_directory = app_data
-        results_path, current_path = self.get_selection_path(self.results_directory)
-        if not current_path:
+        # Figure out a real directory to save into
+        sel_path, cur_dir = self.get_selection_path(app_data)
+        base = sel_path or cur_dir or self._workspace_dir
+        if not base:
             self.add_log('No directory selected.', error=True)
             return
+
+        # If a file was clicked, use its parent; ensure absolute dir
+        if not os.path.isdir(base):
+            base = os.path.dirname(base)
+        base = os.path.abspath(base)
+
+        # Perform the export from the current workspace folder
         save_dir = self.helper.save_results(
-            os.getcwd(), current_path,
-            self.gwas_result_name, self.gwas_result_name_top,
-            self.manhatten_plot_name, self.qq_plot_name, getattr(self, "algorithm", "Unknown"),
-            self.genomic_predict_name, self.gp_plot_name, self.gp_plot_name_scatter,
-            self.add_log, getattr(self, "settings_lst", []), self.pheno_stats_name, self.geno_stats_name
+            current_dir=self._workspace_dir,
+            save_dir=base,
+            gwas_result_name=self.gwas_result_name,
+            gwas_result_name_top=self.gwas_result_name_top,
+            manhatten_plot_name=self.manhatten_plot_name,
+            qq_plot_name=self.qq_plot_name,
+            algorithm=getattr(self, "algorithm", "Unknown"),
+            genomic_predict_name=self.genomic_predict_name,
+            gp_plot_name=self.gp_plot_name,
+            gp_plot_name_scatter=self.gp_plot_name_scatter,
+            add_log=self.add_log,
+            settings_lst=getattr(self, "settings_lst", []),
+            pheno_stats_name=self.pheno_stats_name,
+            geno_stats_name=self.geno_stats_name
         )
         self.add_log('Results saved in: ' + save_dir)
 
@@ -794,6 +913,8 @@ class GWASApp:
         if not bam_in:
             self.add_log('Please select a BAM file first (Preprocess samtools).', error=True)
             return
+
+        self._set_workspace_dir(os.path.dirname(bam_in))
 
         threads = max(1, int(dpg.get_value(self.sam_threads)))
         remove_dups = bool(dpg.get_value(self.sam_remove_dups))
@@ -839,6 +960,8 @@ class GWASApp:
             self.add_log('Please select a reference FASTA first.', error=True)
             return
 
+        self._set_workspace_dir(os.path.dirname(bam_spec))
+
         regions_path = self._get_appdata_path_safe(self.blacklist_app_data)
         threads = max(1, int(dpg.get_value(self.vc_threads)))
         ploidy = max(1, int(dpg.get_value(self.vc_ploidy)))
@@ -877,6 +1000,8 @@ class GWASApp:
         if not vcf_path:
             self.add_log('Please select a VCF file first (Preprocess tab).', error=True)
             return
+
+        self._set_workspace_dir(os.path.dirname(vcf_path))
 
         fasta_path = self._get_appdata_path_safe(self.fasta_app_data)
         regions_path = self._get_appdata_path_safe(self.blacklist_app_data)
@@ -931,6 +1056,8 @@ class GWASApp:
         if not vcf_path:
             self.add_log('Please select a VCF file first.', error=True)
             return
+
+        self._set_workspace_dir(os.path.dirname(vcf_path))
 
         _ = bool(dpg.get_value(self.deep_scan))
         self.add_log('Running VCF Quality Check...')
@@ -1032,7 +1159,6 @@ class GWASApp:
                             pass
 
     def convert_vcf(self, s, data, user_data):
-        import os
         try:
             if isinstance(user_data, dict):
                 maf_item = user_data.get("maf", "tooltip_maf")
@@ -1054,11 +1180,14 @@ class GWASApp:
             self.add_log('[ERROR] Please select a valid VCF file first.', error=True)
             return
 
-        base_noext = os.path.splitext(vcf_path)[0]
+        self._set_workspace_dir(os.path.dirname(vcf_path))
+
+        base_noext = os.path.splitext(os.path.basename(vcf_path))[0]
         try:
-            out_prefix = f"{base_noext}_maf{round(float(maf), 3)}_geno{round(float(geno), 3)}"
+            out_prefix_name = f"{base_noext}_maf{round(float(maf), 3)}_geno{round(float(geno), 3)}"
         except Exception:
-            out_prefix = f"{base_noext}_maf{maf}_geno{geno}"
+            out_prefix_name = f"{base_noext}_maf{maf}_geno{geno}"
+        out_prefix = os.path.join(self._workspace_dir, out_prefix_name)
 
         self.add_log("[INFO] Converting VCF → PLINK")
         self.add_log(f"[INFO] VCF: {vcf_path}")
@@ -1083,8 +1212,27 @@ class GWASApp:
         else:
             self.add_log("[ERROR] Conversion did not produce BED/BIM/FAM files.", error=True)
 
+    def _build_top_snps_file(self):
+        """Create gwas_top_snps.csv in the workspace for the Top SNPs tab."""
+        try:
+            import pandas as pd
+            if not os.path.exists(self.gwas_result_name):
+                return
+            df = pd.read_csv(self.gwas_result_name)
+            if 'PValue' in df.columns:
+                out = df.dropna(subset=['PValue']).sort_values('PValue', ascending=True).head(100)
+            elif 'SNP effect' in df.columns:
+                out = df.dropna(subset=['SNP effect']).sort_values('SNP effect', ascending=False).head(100)
+            else:
+                out = df.head(100)
+            out.to_csv(self.gwas_top_snps_name, index=False)
+            self.add_log(f"[TopSNPs] Saved: {self.gwas_top_snps_name}")
+        except Exception as e:
+            self.add_log(f"[TopSNPs] Failed to build: {e}", warn=True)
+
     def run_gwas(self, s, data, user_data):
         self.delete_files()
+
         train_size_set = (100 - dpg.get_value(self.train_size_set)) / 100
         estimators = dpg.get_value(self.estim_set)
         model_nr = dpg.get_value(self.model_nr)
@@ -1099,6 +1247,12 @@ class GWASApp:
             self.add_log('Reading files...')
             bed_path = self.get_selection_path(self.bed_app_data)[0]
             pheno_path = self.get_selection_path(self.pheno_app_data)[0]
+            if not bed_path or not pheno_path:
+                self.add_log('Please select a phenotype and genotype file.', error=True)
+                return
+
+            self._set_workspace_dir(os.path.dirname(bed_path))
+
             cov_path = None
             try:
                 cov_path = self.get_selection_path(self.cov_app_data)[0]
@@ -1160,6 +1314,9 @@ class GWASApp:
 
                 self.gwas.plot_gwas(df_plot, snp_limit, self.algorithm,
                                     self.manhatten_plot_name, self.qq_plot_name, chrom_mapping)
+
+                self._build_top_snps_file()
+
                 self.add_log('Done...')
                 self.show_results_window(gwas_df, self.algorithm, genomic_predict=False)
 
@@ -1200,6 +1357,8 @@ class GWASApp:
             if not bed_path or not pheno_path:
                 self.add_log('Please select a phenotype and genotype file.', error=True)
                 return
+
+            self._set_workspace_dir(os.path.dirname(bed_path))
 
             self.add_log('Reading files...')
             self.add_log('Validating files...')
@@ -1273,6 +1432,10 @@ class GWASApp:
             if gp_df is not None:
                 self.add_log('Genomic Prediction done.')
                 self.add_log('Genomic Prediction Plotting...')
+                if self._safe_load_image(self.gp_plot_name, "ba_tag"):
+                    pass
+                if self._safe_load_image(self.gp_plot_name_scatter, "ba_tag2"):
+                    pass
                 self.genomic_predict_class.plot_gp(gp_df, self.gp_plot_name, self.algorithm)
                 self.genomic_predict_class.plot_gp_scatter(gp_df, self.gp_plot_name_scatter, self.algorithm)
                 self.add_log('Done...')
@@ -1294,6 +1457,8 @@ class GWASApp:
                 self.add_log("Please select BED and phenotype file first (Batch GWAS).", error=True)
                 return
 
+            self._set_workspace_dir(os.path.dirname(bed_path))
+
             algorithm = dpg.get_value(self.batch_algo) if self.batch_algo and dpg.does_item_exist(
                 self.batch_algo) else "FaST-LMM"
 
@@ -1314,7 +1479,7 @@ class GWASApp:
             snp_limit = dpg.get_value(self.snp_limit) if self.snp_limit and dpg.does_item_exist(self.snp_limit) else ""
             snp_limit = int(snp_limit) if str(snp_limit).strip().isdigit() else None
 
-            out_dir = os.getcwd()
+            out_dir = self._workspace_dir
 
             self.add_log(f"[Batch-GWAS] Starting on: {os.path.basename(pheno_path)} using {algorithm}")
             result = run_batch_gwas_for_all_traits(
@@ -1354,17 +1519,16 @@ class GWASApp:
     def _show_validation_plot(self, plot_path: str):
         self.ensure_results_window(show=True, title="Validation Plots")
         dpg.delete_item(self._results_body, children_only=True)
-        try:
-            w, h, c, data = dpg.load_image(plot_path)
-            with dpg.texture_registry(show=False):
-                dpg.add_static_texture(width=w, height=h, default_value=data, tag="gp_val_plot_tag")
-            dpg.add_text("Validation Correlation Plots", parent=self._results_body)
-            dpg.add_spacer(height=6, parent=self._results_body)
-            width = min(1200, w)
-            dpg.add_image(texture_tag="gp_val_plot_tag", parent=self._results_body,
-                          width=width, height=int(h * (width / w)))
-        except Exception as ex:
-            self.add_log(f"[VAL] Could not load validation plot: {ex}", warn=True)
+        wh = self._safe_load_image(plot_path, "gp_val_plot_tag")
+        if not wh:
+            self.add_log(f"[VAL] Plot image not found: {plot_path}", warn=True)
+            return
+        w, h = wh
+        dpg.add_text("Validation Correlation Plots", parent=self._results_body)
+        dpg.add_spacer(height=6, parent=self._results_body)
+        width = min(1200, w)
+        dpg.add_image(texture_tag="gp_val_plot_tag", parent=self._results_body,
+                      width=width, height=int(h * (width / w)))
 
     def _save_qc_report(self, vcf_path: str, report):
         try:
@@ -1377,6 +1541,33 @@ class GWASApp:
         except Exception as e:
             self.add_log(f"[ERROR] Could not save QC report: {e}", error=True)
 
+    # -------- Top SNPs tab --------
+    def _add_top_snps_tab(self, parent_tabbar_tag: str, top_n: int = 100):
+        import pandas as pd
+        path = getattr(self, "gwas_top_snps_name", "gwas_top_snps.csv")
+        if not os.path.exists(path):
+            self.add_log(f"[TopSNPs] '{path}' not found. Skipping Top SNPs tab.", warn=True)
+            return
+        try:
+            df_top = pd.read_csv(path)
+        except Exception as e:
+            self.add_log(f"[TopSNPs] Could not read '{path}': {e}", warn=True)
+            return
+
+        if isinstance(top_n, int) and top_n > 0:
+            df_top = df_top.head(top_n)
+
+        with dpg.tab(label=f"Top SNPs (Top {len(df_top)})", parent=parent_tabbar_tag):
+            with dpg.table(row_background=True, borders_innerH=True, borders_outerH=True,
+                           borders_innerV=True, borders_outerV=True, resizable=True, sortable=True):
+                for col in df_top.columns:
+                    dpg.add_table_column(label=str(col))
+                for _, r in df_top.iterrows():
+                    with dpg.table_row():
+                        for col in df_top.columns:
+                            v = r[col]
+                            dpg.add_text(f"{v:.6g}" if isinstance(v, float) else str(v))
+
     def show_results_window(self, df, algorithm, genomic_predict):
         self.ensure_results_window(show=True, title="Results")
         dpg.delete_item(self._results_body, children_only=True)
@@ -1386,12 +1577,8 @@ class GWASApp:
         dpg.add_spacer(height=10, parent=self._results_body)
 
         if genomic_predict:
-            w1, h1, c1, data1 = dpg.load_image(self.gp_plot_name)
-            with dpg.texture_registry(show=False):
-                dpg.add_static_texture(width=w1, height=h1, default_value=data1, tag="ba_tag")
-            w2, h2, c2, data2 = dpg.load_image(self.gp_plot_name_scatter)
-            with dpg.texture_registry(show=False):
-                dpg.add_static_texture(width=w2, height=h2, default_value=data2, tag="ba_tag2")
+            _ = self._safe_load_image(self.gp_plot_name, "ba_tag")
+            _ = self._safe_load_image(self.gp_plot_name_scatter, "ba_tag2")
 
             with dpg.tab_bar(label='tabbar_results_gp', parent=self._results_body):
                 with dpg.tab(label="Genomic Prediction Results"):
@@ -1408,29 +1595,33 @@ class GWASApp:
                                     v = df.iloc[i, j]
                                     dpg.add_text(f"{v:.2f}" if isinstance(v, float) else str(v))
                 with dpg.tab(label="Correlation Plot (Predicted vs. Phenotype)"):
-                    dpg.add_image(texture_tag="ba_tag2", tag="ba_image2", width=750, height=450)
+                    if dpg.does_item_exist("ba_tag2"):
+                        dpg.add_image(texture_tag="ba_tag2", tag="ba_image2", width=750, height=450)
                 with dpg.tab(label="Bland-Altman Plot (Model Accuracy)"):
-                    dpg.add_image(texture_tag="ba_tag", tag="ba_image", width=750, height=450)
+                    if dpg.does_item_exist("ba_tag"):
+                        dpg.add_image(texture_tag="ba_tag", tag="ba_image", width=750, height=450)
 
         else:
-            w, h, c, data = dpg.load_image(self.manhatten_plot_name)
-            with dpg.texture_registry(show=False):
-                dpg.add_static_texture(width=w, height=h, default_value=data, tag="manhatten_tag")
+            _ = self._safe_load_image(self.manhatten_plot_name, "manhatten_tag")
 
-            with dpg.tab_bar(label='tabbar_results_gwas', parent=self._results_body):
+            with dpg.tab_bar(label='tabbar_results_gwas', parent=self._results_body) as gwas_tabbar:
                 with dpg.tab(label="Manhattan Plot"):
-                    if algorithm in ("FaST-LMM", "Linear regression"):
-                        dpg.add_image(texture_tag="manhatten_tag", tag="manhatten_image", width=950, height=400)
+                    if dpg.does_item_exist("manhatten_tag"):
+                        if algorithm in ("FaST-LMM", "Linear regression"):
+                            dpg.add_image(texture_tag="manhatten_tag", tag="manhatten_image", width=950, height=400)
+                        else:
+                            dpg.add_image(texture_tag="manhatten_tag", tag="manhatten_image", width=900, height=300)
                     else:
-                        dpg.add_image(texture_tag="manhatten_tag", tag="manhatten_image", width=900, height=300)
+                        dpg.add_text("Manhattan plot not available.")
 
                 if algorithm in ("FaST-LMM", "Linear regression"):
-                    w2, h2, c2, data2 = dpg.load_image(self.qq_plot_name)
-                    with dpg.texture_registry(show=False):
-                        dpg.add_static_texture(width=w2, height=h2, default_value=data2, tag="qq_tag")
+                    _ = self._safe_load_image(self.qq_plot_name, "qq_tag")
                     df = df.sort_values(by=['PValue'], ascending=True)
                     with dpg.tab(label="QQ-Plot"):
-                        dpg.add_image(texture_tag="qq_tag", tag="qq_image", height=450, width=450)
+                        if dpg.does_item_exist("qq_tag"):
+                            dpg.add_image(texture_tag="qq_tag", tag="qq_image", height=450, width=450)
+                        else:
+                            dpg.add_text("QQ plot not available.")
                 else:
                     df = df.sort_values(by=['SNP effect'], ascending=False)
 
@@ -1449,6 +1640,8 @@ class GWASApp:
                             with dpg.table_row():
                                 for j in range(df.shape[1]):
                                     dpg.add_text(df.iloc[i, j])
+
+                self._add_top_snps_tab(parent_tabbar_tag=gwas_tabbar, top_n=100)
 
     def toggle_theme(self, sender, app_data):
         self.night_mode = bool(app_data)
@@ -1487,7 +1680,8 @@ class GWASApp:
             self.gp_plot_name_scatter.replace('GP_scatter_plot', 'GP_scatter_plot_high'),
             self.gp_plot_name.replace('Bland_Altman_plot', 'Bland_Altman_plot_high'),
             self.genomic_predict_name.replace('.csv', '_valdation.csv'),
-            self.pheno_stats_name, self.geno_stats_name
+            self.pheno_stats_name, self.geno_stats_name,
+            self.gwas_top_snps_name
         ]:
             if os.path.exists(f):
                 try:
