@@ -188,12 +188,30 @@ class GWASApp:
 
     # ---------------- UI build ----------------
     def setup_gui(self):
-        setup_app_chrome(base_size=18)
+        # Base app chrome and themes
+        setup_app_chrome(base_size=20)
         build_dark_theme()
         build_light_theme()
         build_component_themes()
         apply_theme(dark=True)
 
+        # Load header fonts once (optional)
+        self._font_title = None
+        self._font_subtitle = None
+        try:
+            fonts_dir = os.path.join(os.path.dirname(__file__), "assets", "fonts")
+            title_font_path = os.path.join(fonts_dir, "Inter-SemiBold.ttf")
+            subtitle_font_path = os.path.join(fonts_dir, "Inter-Medium.ttf")
+            with dpg.font_registry():
+                if os.path.exists(title_font_path):
+                    self._font_title = dpg.add_font(title_font_path, 24)
+                if os.path.exists(subtitle_font_path):
+                    self._font_subtitle = dpg.add_font(subtitle_font_path, 16)
+        except Exception:
+            self._font_title = None
+            self._font_subtitle = None
+
+        # Primary window
         with dpg.window(
                 tag="PrimaryWindow",
                 no_title_bar=True, no_move=True, no_resize=True, no_close=True, no_collapse=True, pos=(0, 0)
@@ -201,11 +219,14 @@ class GWASApp:
             pass
         dpg.set_primary_window("PrimaryWindow", True)
 
+        # File dialogs
         self._build_file_dialogs()
 
+        # Workspace
         with dpg.window(label="Workspace", tag="WorkspaceWindow", width=1600, height=1000, pos=(10, 10)):
             with dpg.group(horizontal=True, horizontal_spacing=12):
 
+                # Sidebar
                 with dpg.child_window(tag="Sidebar", width=240, border=True):
                     dpg.add_spacer(height=8)
                     self._build_header(parent="Sidebar")
@@ -232,6 +253,7 @@ class GWASApp:
                     dpg.add_button(label="Open Results Window", width=-1,
                                    callback=lambda: self.ensure_results_window(show=True))
 
+                # Content area
                 with dpg.child_window(tag="content_area", width=-1, border=True):
                     self._build_header(parent="content_area", big=True)
                     dpg.add_spacer(height=6)
@@ -242,9 +264,11 @@ class GWASApp:
                     if isinstance(built, dict):
                         self._pages.update(built)
 
+        # Discover pages
         self._index_pages_from_ui()
         self.add_log(f"[UI] Pages discovered: {list(self._pages.keys()) or 'NONE'}", warn=not bool(self._pages))
 
+        # Settings callbacks
         settings_cbs = {
             "settings_dark_toggle": self.toggle_theme,
             "settings_font_scale": self._on_font_scale_change,
@@ -254,8 +278,10 @@ class GWASApp:
             if dpg.does_item_exist(tag):
                 dpg.set_item_callback(tag, cb)
 
+        # Tooltips
         self._build_tooltips()
 
+        # File dialog callbacks
         cb_map = {
             "file_dialog_vcf": self.callback_vcf,
             "file_dialog_variants": self.callback_variants,
@@ -273,15 +299,19 @@ class GWASApp:
             if dpg.does_item_exist(tag):
                 dpg.set_item_callback(tag, fn)
 
+        # Hide all pages initially
         for tag in self._pages.values():
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=False)
 
+        # Default page
         self.show_page("pre_sam")
 
+        # Themes & version checks
         self.apply_component_themes()
         self._check_cli_versions()
 
+        # Lazy-create floating windows
         self.ensure_log_window(show=False)
         self.ensure_results_window(show=False)
 
@@ -411,7 +441,7 @@ class GWASApp:
             dpg.add_text("PlantVarFilter", color=(210, 230, 210) if self.night_mode else (30, 45, 35))
             if big:
                 dpg.add_spacer(width=10)
-                dpg.add_text("Development by Ye-Lab, PKU-IAAS, Ahmed Yassin",
+                dpg.add_text("",
                              color=(220, 200, 120) if self.night_mode else (40, 90, 40))
 
     # ---------------- navigation ----------------
@@ -514,31 +544,30 @@ class GWASApp:
         try:
             if not dpg.does_item_exist("content_area"):
                 return
-            # import both watermark (center) and lab signature (bottom-right)
+
             from ui.watermark import setup as setup_watermark, place_signature as setup_lab_signature
 
-            def _do():
+            def _place():
                 try:
-                    # main center watermark
                     setup_watermark(
                         alpha=self._wm_alpha,
                         scale=self._wm_scale,
                         target_window_tag="content_area",
                         front=True,
                     )
-                    # lab signature from PlantVarFilter/assets/logo_lab.png
                     setup_lab_signature(
                         target_window_tag="content_area",
                         image_name="logo_lab.png",
-                        alpha=50,  # 0..100
-                        width=160,  # px
-                        margin=(12, 12),  # (right, bottom) px
-                        front=True,  # put above controls; set False to send behind
+                        width=240,
+                        margin=(16, 16),
                     )
                 except Exception as ex:
                     self.add_log(f"[wm] draw failed: {ex}", warn=True)
 
-            dpg.set_frame_callback(dpg.get_frame_count() + 1, _do)
+                dpg.set_frame_callback(dpg.get_frame_count() + 10, _place)
+
+            dpg.set_frame_callback(dpg.get_frame_count() + 1, _place)
+
         except Exception as e:
             self.add_log(f"[wm] refresh failed: {e}", warn=True)
 
