@@ -514,14 +514,26 @@ class GWASApp:
         try:
             if not dpg.does_item_exist("content_area"):
                 return
-            from ui.watermark import setup as setup_watermark
+            # import both watermark (center) and lab signature (bottom-right)
+            from ui.watermark import setup as setup_watermark, place_signature as setup_lab_signature
+
             def _do():
                 try:
+                    # main center watermark
                     setup_watermark(
                         alpha=self._wm_alpha,
                         scale=self._wm_scale,
                         target_window_tag="content_area",
                         front=True,
+                    )
+                    # lab signature from PlantVarFilter/assets/logo_lab.png
+                    setup_lab_signature(
+                        target_window_tag="content_area",
+                        image_name="logo_lab.png",
+                        alpha=50,  # 0..100
+                        width=160,  # px
+                        margin=(12, 12),  # (right, bottom) px
+                        front=True,  # put above controls; set False to send behind
                     )
                 except Exception as ex:
                     self.add_log(f"[wm] draw failed: {ex}", warn=True)
