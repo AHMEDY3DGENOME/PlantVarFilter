@@ -154,7 +154,7 @@ def place_signature(target_window_tag: str = "content_area",
     # text (right-aligned block to the left)
     main_text = "Ye-Lab, PKU-IAAS"
     sub_text  = ("Develop by:"
-                 " Ahmed Yassin and  Falak")
+                 " Ahmed Yassin and  Falak Sher Khan")
     gap = 12
     main_w, main_h = dpg.get_text_size(main_text)
     sub_w,  sub_h  = dpg.get_text_size(sub_text)
