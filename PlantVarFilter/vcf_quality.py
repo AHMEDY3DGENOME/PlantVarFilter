@@ -8,6 +8,11 @@ from typing import Dict, List, Tuple, Optional
 
 DNA = set("ACGT")
 
+# Data-type classification thresholds
+MAF_THRESHOLD = 0.01          # >=1% MAF to call a site "polymorphic"
+SNP_MAJORITY_FRACTION = 0.95  # >=95% of biallelic SNV sites polymorphic -> label file as "SNPs"
+
+
 @dataclass
 class VCFQualityReport:
     score: float
@@ -16,6 +21,8 @@ class VCFQualityReport:
     recommendations: List[str]
     hard_fail_reasons: List[str]
     dists: Optional[Dict[str, List[float]]] = None   # raw distributions (for plots)
+    data_type: Optional[str] = None                  # "SNPs" or "SNVs"
+
 
 class VCFQualityChecker:
     """
@@ -25,6 +32,7 @@ class VCFQualityChecker:
       - site/sample missingness (approx)
       - DP / GQ summaries (median, p10, p90) when available
       - Heterozygote allele balance (from AD or AB when available)
+      - Data type detection: "SNPs" vs "SNVs"
     Returns a VCF-QAScore (0..100) + verdict + recommendations + raw dists for plotting.
     """
     def __init__(self, max_sites_scan: int = 200_000, min_sites_required: int = 5_000):
@@ -35,9 +43,9 @@ class VCFQualityChecker:
     def evaluate(self, vcf_path: str, log_fn=print) -> VCFQualityReport:
         reasons = self._quick_header_checks(vcf_path, log_fn)
         if reasons:
-            return VCFQualityReport(0.0, "Fail", {}, [], reasons, dists=None)
+            return VCFQualityReport(0.0, "Fail", {}, [], reasons, dists=None, data_type=None)
 
-        feats, dists = self._scan_features(vcf_path, log_fn)
+        feats, dists, data_type = self._scan_features(vcf_path, log_fn)
 
         sites = int(feats.get("sites_scanned", 0))
         small_penalty = 0.0
@@ -47,7 +55,7 @@ class VCFQualityChecker:
             return VCFQualityReport(
                 0.0, "Fail", feats,
                 ["VCF is extremely small (<150 sites). Add more variants then re-check."],
-                [], dists
+                [], dists, data_type=data_type
             )
         if sites < self.min_sites_required:
             small_penalty = min(40.0, (self.min_sites_required - sites) / self.min_sites_required * 30.0)
@@ -56,18 +64,27 @@ class VCFQualityChecker:
         base_score, _base_verdict, recs_base = self._score_and_recommend(feats)
         score = max(0.0, base_score - small_penalty)
         verdict = "Pass" if score >= 80 else ("Caution" if score >= 60 else "Fail")
-        return VCFQualityReport(score, verdict, feats, recs + recs_base, [], dists)
+        return VCFQualityReport(score, verdict, feats, recs + recs_base, [], dists, data_type=data_type)
 
     def to_text(self, report: VCFQualityReport, vcf_path: Optional[str] = None) -> str:
         """Render a human-readable QC report string."""
         lines: List[str] = []
         if vcf_path:
             lines.append(f"VCF: {vcf_path}")
-        lines.append(f"QC Score: {report.score:.1f}")
-        lines.append(f"Verdict : {report.verdict}")
+        lines.append(f"VCF-QAScore: {report.score:.1f}  |  Verdict: {report.verdict}")
+        if "samples" in report.metrics:
+            lines.append(f"Samples: {int(report.metrics['samples'])}")
+        if report.data_type:
+            lines.append(f"Data type: {report.data_type}")
         lines.append("")
-        lines.append("== Metrics ==")
-        # Surface key headline metrics first if present
+        lines.append("Recommendations:")
+        if report.recommendations:
+            for r in report.recommendations:
+                lines.append(f"- {r}")
+        else:
+            lines.append("- None")
+        lines.append("")
+        lines.append("Metrics:")
         headline = ["samples", "sites_scanned", "snps", "indels", "multiallelic",
                     "multiallelic_ratio", "snp_indel_ratio", "titv",
                     "site_missing_mean", "site_missing_p90",
@@ -80,22 +97,14 @@ class VCFQualityChecker:
             if k in report.metrics:
                 lines.append(f"{k:>22}: {report.metrics[k]}")
                 shown.add(k)
-        # Print any remaining metrics
         for k, v in sorted(report.metrics.items()):
             if k not in shown:
                 lines.append(f"{k:>22}: {v}")
-        lines.append("")
         if report.hard_fail_reasons:
-            lines.append("== Hard Fail Reasons ==")
+            lines.append("")
+            lines.append("Hard Fail Reasons:")
             for r in report.hard_fail_reasons:
                 lines.append(f"- {r}")
-            lines.append("")
-        lines.append("== Recommendations ==")
-        if report.recommendations:
-            for r in report.recommendations:
-                lines.append(f"- {r}")
-        else:
-            lines.append("- None")
         return "\n".join(lines)
 
     # ---------- Internals ----------
@@ -140,7 +149,7 @@ class VCFQualityChecker:
 
         return reasons
 
-    def _scan_features(self, vcf_path: str, log_fn) -> Tuple[Dict[str, float], Dict[str, List[float]]]:
+    def _scan_features(self, vcf_path: str, log_fn) -> Tuple[Dict[str, float], Dict[str, List[float]], str]:
         total = snps = indels = multiallelic = 0
         ti = tv = 0
         site_missing_rates: List[float] = []
@@ -148,6 +157,12 @@ class VCFQualityChecker:
         dp_vals: List[float] = []
         gq_vals: List[float] = []
         ab_deviations: List[float] = []
+
+        # Data-type counters
+        non_snv_sites = 0
+        snv_sites = 0
+        snv_biallelic_sites = 0
+        snv_snp_like_sites = 0  # SNV sites with MAF >= threshold
 
         samples_n = 0
         format_keys: List[str] = []
@@ -179,10 +194,16 @@ class VCFQualityChecker:
                     multiallelic += 1
 
                 ref_len = len(REF)
-                alt_is_snp = all(len(a) == 1 and a in DNA for a in alts if a != ".")
-                ref_is_snp = (ref_len == 1 and REF in DNA)
+                alt_is_snv = all(len(a) == 1 and a in DNA for a in alts if a != ".")
+                ref_is_snv = (ref_len == 1 and REF in DNA)
+                is_snv_site = (ref_is_snv and alt_is_snv)
 
-                if ref_is_snp and alt_is_snp:
+                if is_snv_site:
+                    snv_sites += 1
+                else:
+                    non_snv_sites += 1
+
+                if is_snv_site:
                     snps += 1
                     if len(alts) == 1 and alts[0] in DNA:
                         if self._is_transition(REF, alts[0]):
@@ -203,6 +224,12 @@ class VCFQualityChecker:
                     idx_DP = key_idx.get("DP")
                     idx_GQ = key_idx.get("GQ")
 
+                    # For MAF calculation at biallelic SNV sites
+                    ref_count = 0
+                    alt_count = 0
+                    denom_for_maf = 0
+                    is_biallelic_snv = is_snv_site and len(alts) == 1 and alts[0] in DNA
+
                     for si, cell in enumerate(sample_fields):
                         if not cell or cell == ".":
                             if sample_missing_counts is not None:
@@ -218,6 +245,17 @@ class VCFQualityChecker:
                                 sample_missing_counts[si] += 1
                             site_missing += 1
                         else:
+                            # Count alleles for MAF at biallelic SNV sites
+                            if is_biallelic_snv:
+                                g = gt.replace("|", "/")
+                                if g in ("0/0", "0/1", "1/0", "1/1"):
+                                    if g == "0/0":
+                                        ref_count += 2; denom_for_maf += 2
+                                    elif g in ("0/1", "1/0"):
+                                        ref_count += 1; alt_count += 1; denom_for_maf += 2
+                                    elif g == "1/1":
+                                        alt_count += 2; denom_for_maf += 2
+
                             if ("0/1" in gt) or ("1/0" in gt) or ("0|1" in gt) or ("1|0" in gt):
                                 if idx_AB is not None and idx_AB < len(toks):
                                     try:
@@ -231,10 +269,10 @@ class VCFQualityChecker:
                                         ad = toks[idx_AD]
                                         rs = ad.split(",")
                                         if len(rs) >= 2:
-                                            ref_c = float(rs[0]) if rs[0].isdigit() else None
-                                            alt_c = float(rs[1]) if rs[1].isdigit() else None
-                                            if ref_c is not None and alt_c is not None and (ref_c + alt_c) > 0:
-                                                ab = alt_c / (ref_c + alt_c)
+                                            rc = float(rs[0]) if rs[0].isdigit() else None
+                                            ac = float(rs[1]) if rs[1].isdigit() else None
+                                            if rc is not None and ac is not None and (rc + ac) > 0:
+                                                ab = ac / (rc + ac)
                                                 ab_deviations.append(abs(ab - 0.5))
                                     except Exception:
                                         pass
@@ -254,19 +292,26 @@ class VCFQualityChecker:
                                 except Exception:
                                     pass
 
+                    if is_biallelic_snv:
+                        snv_biallelic_sites += 1
+                        if denom_for_maf > 0:
+                            maf = min(alt_count, ref_count) / float(denom_for_maf)
+                            if maf >= MAF_THRESHOLD:
+                                snv_snp_like_sites += 1
+
                 if samples_n > 0:
                     site_missing_rates.append(site_missing / samples_n)
 
                 total += 1
 
         metrics: Dict[str, float] = {}
-        metrics["samples"] = float(samples_n)            # ADDED
+        metrics["samples"] = float(samples_n)
         metrics["sites_scanned"] = float(total)
-        metrics["snps"] = float(snps)
+        metrics["snps"] = float(snv_sites)  # SNV site count (kept as "snps" for continuity with UI)
         metrics["indels"] = float(indels)
         metrics["multiallelic"] = float(multiallelic)
         metrics["multiallelic_ratio"] = (multiallelic / total) if total else 0.0
-        metrics["snp_indel_ratio"] = (snps / indels) if indels else float("inf")
+        metrics["snp_indel_ratio"] = (snv_sites / indels) if indels else float("inf")
         metrics["titv"] = (ti / tv) if tv else float("inf")
 
         if site_missing_rates:
@@ -303,7 +348,20 @@ class VCFQualityChecker:
             "ab_dev": ab_deviations,
             "site_missing": site_missing_rates,
         }
-        return metrics, dists
+
+        # Final data type decision:
+        # If any non-SNV site exists -> label "SNVs".
+        # Else all sites are SNV: label "SNPs" only if >=95% of biallelic SNV sites have MAF >=1%.
+        if non_snv_sites > 0:
+            data_type = "SNVs"
+        else:
+            if snv_biallelic_sites > 0:
+                frac_poly = snv_snp_like_sites / float(snv_biallelic_sites)
+                data_type = "SNPs" if frac_poly >= SNP_MAJORITY_FRACTION else "SNVs"
+            else:
+                data_type = "SNVs"
+
+        return metrics, dists, data_type
 
     def _score_and_recommend(self, m: Dict[str, float]) -> Tuple[float, str, List[str]]:
         penalties = []

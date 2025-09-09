@@ -1059,19 +1059,21 @@ class GWASApp:
 
         self._set_workspace_dir(os.path.dirname(vcf_path))
 
-        _ = bool(dpg.get_value(self.deep_scan))
+        _ = bool(dpg.get_value(self.deep_scan))  # reserved flag (currently unused)
         self.add_log('Running VCF Quality Check...')
         report = self.vcf_qc_checker.evaluate(vcf_path, log_fn=self.add_log)
 
         self.ensure_results_window(show=True, title="VCF QC Results")
         dpg.delete_item(self._results_body, children_only=True)
 
+        # Header actions
         with dpg.group(parent=self._results_body, horizontal=True, horizontal_spacing=8):
             dpg.add_button(label="Export Results (copy files)", callback=lambda: dpg.show_item("select_directory"))
             dpg.add_button(label="Save QC Report (.txt)", callback=lambda: self._save_qc_report(vcf_path, report))
 
         dpg.add_spacer(height=10, parent=self._results_body)
 
+        # Headline
         dpg.add_text(
             f"VCF-QAScore: {report.score:.1f}   |   Verdict: {report.verdict}",
             parent=self._results_body
@@ -1081,6 +1083,20 @@ class GWASApp:
             parent=self._results_body
         )
 
+        # NEW: Data type (SNPs / SNVs) shown right under Samples
+        try:
+            dt = getattr(report, "data_type", None)
+            if not dt:
+                # Fallback: infer from metrics if the field wasn't populated
+                s = float(report.metrics.get("snps", 0.0) or 0.0)
+                i = float(report.metrics.get("indels", 0.0) or 0.0)
+                dt = "SNPs" if (s > 0 and i == 0) else "SNVs"
+            dpg.add_text(f"Data type: {dt}", parent=self._results_body)
+        except Exception:
+            # Safe fallback to ensure the line always appears
+            dpg.add_text("Data type: SNVs", parent=self._results_body)
+
+        # Hard fails (early exit)
         if report.hard_fail_reasons:
             dpg.add_spacer(height=4, parent=self._results_body)
             dpg.add_text("Hard fail reasons:", parent=self._results_body)
@@ -1088,6 +1104,7 @@ class GWASApp:
                 dpg.add_text(f"- {r}", parent=self._results_body)
             return
 
+        # Recommendations
         dpg.add_spacer(height=10, parent=self._results_body)
         dpg.add_text("Recommendations:", parent=self._results_body)
         if report.recommendations:
@@ -1096,6 +1113,7 @@ class GWASApp:
         else:
             dpg.add_text("- No specific recommendations.", parent=self._results_body)
 
+        # Metrics table
         dpg.add_spacer(height=10, parent=self._results_body)
         dpg.add_text("Metrics:", parent=self._results_body)
         with dpg.table(row_background=True, borders_innerH=True, borders_outerH=True,
@@ -1107,6 +1125,7 @@ class GWASApp:
                     dpg.add_text(str(k))
                     dpg.add_text(f"{v:.6g}" if isinstance(v, (int, float)) else str(v))
 
+        # Plots
         dpg.add_spacer(height=10, parent=self._results_body)
         dpg.add_text("QC Plots:", parent=self._results_body)
         with dpg.tab_bar(parent=self._results_body) as qc_tabbar:
