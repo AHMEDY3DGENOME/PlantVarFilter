@@ -1083,18 +1083,18 @@ class GWASApp:
             parent=self._results_body
         )
 
-        # NEW: Data type (SNPs / SNVs) shown right under Samples
+        # Data type (SNPs / SVs) shown right under Samples
         try:
             dt = getattr(report, "data_type", None)
             if not dt:
                 # Fallback: infer from metrics if the field wasn't populated
                 s = float(report.metrics.get("snps", 0.0) or 0.0)
                 i = float(report.metrics.get("indels", 0.0) or 0.0)
-                dt = "SNPs" if (s > 0 and i == 0) else "SNVs"
+                dt = "SNPs" if (s > 0 and i == 0) else "SVs"
             dpg.add_text(f"Data type: {dt}", parent=self._results_body)
         except Exception:
             # Safe fallback to ensure the line always appears
-            dpg.add_text("Data type: SNVs", parent=self._results_body)
+            dpg.add_text("Data type: SVs", parent=self._results_body)
 
         # Hard fails (early exit)
         if report.hard_fail_reasons:

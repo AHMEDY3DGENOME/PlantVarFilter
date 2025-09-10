@@ -8,11 +8,6 @@ from typing import Dict, List, Tuple, Optional
 
 DNA = set("ACGT")
 
-# Data-type classification thresholds
-MAF_THRESHOLD = 0.01          # >=1% MAF to call a site "polymorphic"
-SNP_MAJORITY_FRACTION = 0.95  # >=95% of biallelic SNV sites polymorphic -> label file as "SNPs"
-
-
 @dataclass
 class VCFQualityReport:
     score: float
@@ -21,8 +16,7 @@ class VCFQualityReport:
     recommendations: List[str]
     hard_fail_reasons: List[str]
     dists: Optional[Dict[str, List[float]]] = None   # raw distributions (for plots)
-    data_type: Optional[str] = None                  # "SNPs" or "SNVs"
-
+    data_type: Optional[str] = None                  # "SNPs" or "SVs"
 
 class VCFQualityChecker:
     """
@@ -32,7 +26,7 @@ class VCFQualityChecker:
       - site/sample missingness (approx)
       - DP / GQ summaries (median, p10, p90) when available
       - Heterozygote allele balance (from AD or AB when available)
-      - Data type detection: "SNPs" vs "SNVs"
+      - Data type detection: "SNPs" vs "SVs" (SNP-only vs otherwise)
     Returns a VCF-QAScore (0..100) + verdict + recommendations + raw dists for plotting.
     """
     def __init__(self, max_sites_scan: int = 200_000, min_sites_required: int = 5_000):
@@ -158,11 +152,9 @@ class VCFQualityChecker:
         gq_vals: List[float] = []
         ab_deviations: List[float] = []
 
-        # Data-type counters
+        # Counters for data-type
         non_snv_sites = 0
         snv_sites = 0
-        snv_biallelic_sites = 0
-        snv_snp_like_sites = 0  # SNV sites with MAF >= threshold
 
         samples_n = 0
         format_keys: List[str] = []
@@ -224,12 +216,6 @@ class VCFQualityChecker:
                     idx_DP = key_idx.get("DP")
                     idx_GQ = key_idx.get("GQ")
 
-                    # For MAF calculation at biallelic SNV sites
-                    ref_count = 0
-                    alt_count = 0
-                    denom_for_maf = 0
-                    is_biallelic_snv = is_snv_site and len(alts) == 1 and alts[0] in DNA
-
                     for si, cell in enumerate(sample_fields):
                         if not cell or cell == ".":
                             if sample_missing_counts is not None:
@@ -245,17 +231,6 @@ class VCFQualityChecker:
                                 sample_missing_counts[si] += 1
                             site_missing += 1
                         else:
-                            # Count alleles for MAF at biallelic SNV sites
-                            if is_biallelic_snv:
-                                g = gt.replace("|", "/")
-                                if g in ("0/0", "0/1", "1/0", "1/1"):
-                                    if g == "0/0":
-                                        ref_count += 2; denom_for_maf += 2
-                                    elif g in ("0/1", "1/0"):
-                                        ref_count += 1; alt_count += 1; denom_for_maf += 2
-                                    elif g == "1/1":
-                                        alt_count += 2; denom_for_maf += 2
-
                             if ("0/1" in gt) or ("1/0" in gt) or ("0|1" in gt) or ("1|0" in gt):
                                 if idx_AB is not None and idx_AB < len(toks):
                                     try:
@@ -292,13 +267,6 @@ class VCFQualityChecker:
                                 except Exception:
                                     pass
 
-                    if is_biallelic_snv:
-                        snv_biallelic_sites += 1
-                        if denom_for_maf > 0:
-                            maf = min(alt_count, ref_count) / float(denom_for_maf)
-                            if maf >= MAF_THRESHOLD:
-                                snv_snp_like_sites += 1
-
                 if samples_n > 0:
                     site_missing_rates.append(site_missing / samples_n)
 
@@ -307,8 +275,8 @@ class VCFQualityChecker:
         metrics: Dict[str, float] = {}
         metrics["samples"] = float(samples_n)
         metrics["sites_scanned"] = float(total)
-        metrics["snps"] = float(snv_sites)  # SNV site count (kept as "snps" for continuity with UI)
-        metrics["indels"] = float(indels)
+        metrics["snps"] = float(snv_sites)  # single-nucleotide sites
+        metrics["indels"] = float(indels)   # includes non-SNVs seen in counting branch
         metrics["multiallelic"] = float(multiallelic)
         metrics["multiallelic_ratio"] = (multiallelic / total) if total else 0.0
         metrics["snp_indel_ratio"] = (snv_sites / indels) if indels else float("inf")
@@ -349,17 +317,10 @@ class VCFQualityChecker:
             "site_missing": site_missing_rates,
         }
 
-        # Final data type decision:
-        # If any non-SNV site exists -> label "SNVs".
-        # Else all sites are SNV: label "SNPs" only if >=95% of biallelic SNV sites have MAF >=1%.
-        if non_snv_sites > 0:
-            data_type = "SNVs"
-        else:
-            if snv_biallelic_sites > 0:
-                frac_poly = snv_snp_like_sites / float(snv_biallelic_sites)
-                data_type = "SNPs" if frac_poly >= SNP_MAJORITY_FRACTION else "SNVs"
-            else:
-                data_type = "SNVs"
+        # Data type decision (two-label policy):
+        # - SNPs: all sites are single-nucleotide (no non-SNVs encountered)
+        # - SVs : any site is non-SNV (indel/MNV/symbolic etc.)
+        data_type = "SNPs" if non_snv_sites == 0 else "SVs"
 
         return metrics, dists, data_type
 
