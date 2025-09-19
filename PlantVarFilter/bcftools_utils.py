@@ -22,7 +22,6 @@ class BCFtools:
         bgzip_bin: Optional[str] = None,
         tabix_bin: Optional[str] = None,
     ):
-        # Prefer bundled binaries under PlantVarFilter/linux, then fall back to PATH.
         self.bcftools = bcftools_bin or resolve_tool("bcftools")
         self.bgzip = bgzip_bin or resolve_tool("bgzip")
         self.tabix = tabix_bin or resolve_tool("tabix")
@@ -31,8 +30,7 @@ class BCFtools:
         try:
             log(msg)
         except TypeError:
-            # If the logger expects extra flags, ignore them.
-            log(msg)  # no flags
+            log(msg)
 
     def ensure_bins(self, log: LogFn = print):
         missing = []
@@ -79,11 +77,12 @@ class BCFtools:
         left_align: bool = True,
         do_sort: bool = True,
         set_id_from_fields: bool = True,
-        filter_expr: Optional[str] = None,  # e.g. 'QUAL>=30 && INFO/DP>=10'
+        filter_expr: Optional[str] = None,
         remove_filtered: bool = False,
         compress_output: bool = True,
         index_output: bool = True,
         keep_temps: bool = False,
+        fill_tags: bool = False,
     ) -> Tuple[str, Optional[str]]:
         """
         Runs a bcftools-based preprocessing pipeline and returns:
@@ -106,7 +105,6 @@ class BCFtools:
         temps: List[str] = []
         current = input_vcf
 
-        # 1) norm: left-align + split multiallelic
         if left_align or split_multiallelic:
             out1 = f"{out_prefix}.norm{_vcf_ext(True)}"
             cmd = [self.bcftools, "norm"]
@@ -125,7 +123,6 @@ class BCFtools:
             current = out1
             temps.append(out1)
 
-        # 2) sort
         if do_sort:
             out2 = f"{out_prefix}.sort{_vcf_ext(True)}"
             cmd = [self.bcftools, "sort", "-Oz", "-o", out2, current]
@@ -133,7 +130,6 @@ class BCFtools:
             current = out2
             temps.append(out2)
 
-        # 3) set ID as CHROM:POS:REF:ALT
         if set_id_from_fields:
             out3 = f"{out_prefix}.id{_vcf_ext(True)}"
             cmd = [
@@ -152,7 +148,13 @@ class BCFtools:
             current = out3
             temps.append(out3)
 
-        # 4) restrict to regions (optional)
+        if fill_tags:
+            out_tags = f"{out_prefix}.tags{_vcf_ext(True)}"
+            cmd = [self.bcftools, "+fill-tags", current, "-Oz", "-o", out_tags, "--", "-t", "AC,AN,AF,MAF,HWE"]
+            self._run(cmd, log)
+            current = out_tags
+            temps.append(out_tags)
+
         if regions_bed and os.path.exists(regions_bed):
             out4 = f"{out_prefix}.region{_vcf_ext(True)}"
             cmd = [self.bcftools, "view", "-R", regions_bed, "-Oz", "-o", out4, current]
@@ -160,7 +162,6 @@ class BCFtools:
             current = out4
             temps.append(out4)
 
-        # 5) filter by expression (optional)
         if filter_expr and filter_expr.strip():
             out5 = f"{out_prefix}.filt{_vcf_ext(True)}"
             cmd = [self.bcftools, "filter", "-i", filter_expr, "-Oz", "-o", out5, current]
@@ -168,7 +169,6 @@ class BCFtools:
             current = out5
             temps.append(out5)
 
-        # 6) keep only PASS and '.' (optional)
         if remove_filtered:
             out6 = f"{out_prefix}.pass{_vcf_ext(True)}"
             cmd = [self.bcftools, "view", "-f", ".,PASS", "-Oz", "-o", out6, current]
@@ -176,7 +176,6 @@ class BCFtools:
             current = out6
             temps.append(out6)
 
-        # 7) finalize format (compressed or plain)
         final_path = f"{out_prefix}{_vcf_ext(compress_output)}"
         if os.path.abspath(current) != os.path.abspath(final_path):
             if compress_output:
@@ -196,7 +195,6 @@ class BCFtools:
                     cmd = [self.bcftools, "view", "-Ov", "-o", final_path, current]
                     self._run(cmd, log)
 
-        # 8) index and stats (if compressed)
         stats_path: Optional[str] = None
         if compress_output and index_output:
             cmd = [self.tabix, "-f", "-p", "vcf", final_path]
@@ -210,7 +208,6 @@ class BCFtools:
                 if proc.returncode != 0:
                     self._emit(log, "WARN: bcftools stats failed")
 
-        # Cleanup temporaries
         if not keep_temps:
             for t in temps:
                 try:

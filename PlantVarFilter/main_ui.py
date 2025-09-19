@@ -20,6 +20,8 @@ import pysnptools.util as pstutil
 from bcftools_utils import BCFtools, BCFtoolsError
 from samtools_utils import Samtools, SamtoolsError
 from PlantVarFilter.batch_gwas import run_batch_gwas_for_all_traits
+from ui.ui_pages import build_pages
+
 
 try:
     from variant_caller_utils import VariantCaller, VariantCallerError
@@ -52,7 +54,7 @@ class GWASApp:
         self._primary_buttons = []
         self._secondary_buttons = []
         self._file_dialogs = []
-        self.default_path = "/"  # start file dialogs from filesystem root
+        self.default_path = "/"
         self.night_mode = True
 
         self._wm_alpha = 48
@@ -76,6 +78,7 @@ class GWASApp:
         ) if VariantCaller else None
 
         self.vcf_app_data = None
+        self.vcf2_app_data = None
         self.variants_app_data = None
         self.results_directory = None
         self.bed_app_data = None
@@ -91,7 +94,6 @@ class GWASApp:
         self.sam_out_last = None
         self.vc_out_last = None
 
-        # Output paths (bound to workspace folder)
         self._workspace_dir = os.getcwd()
         self.gwas_result_name = "gwas_results.csv"
         self.gwas_result_name_top = "gwas_results_top10000.csv"
@@ -150,23 +152,31 @@ class GWASApp:
         self._active_key = None
 
         self._nav_items = [
+            ("ref_manager", "Reference Manager"),
+            ("fastq_qc", "FASTQ QC"),
+            ("alignment", "Alignment"),
             ("pre_sam", "Preprocess (samtools)"),
             ("vc", "Variant Calling (BAM/VCF)"),
             ("pre_bcf", "Preprocess (bcftools)"),
             ("check_vcf", "Check VCF File"),
             ("plink", "Convert to PLINK"),
+            ("ld", "LD Analysis"),
             ("gwas", "GWAS Analysis"),
             ("gp", "Genomic Prediction"),
             ("batch", "Batch GWAS"),
             ("settings", "Settings"),
         ]
 
-        # Flag to avoid DPG calls before context exists
         self._gui_ready = False
 
-    # ---------- workspace/output binding ----------
+        # cache for reference indexes built in Reference Manager
+        self._ref_info = {"fasta": None, "out_dir": None, "prefix": None}
+
+    @property
+    def workspace_dir(self) -> str:
+        return self._workspace_dir
+
     def _set_workspace_dir(self, directory: str):
-        """Set the workspace folder and rebind all output file paths into it."""
         try:
             if not directory:
                 directory = os.getcwd()
@@ -192,7 +202,6 @@ class GWASApp:
         self.geno_stats_name = _mk("geno_statistics.pdf")
         self.gwas_top_snps_name = _mk("gwas_top_snps.csv")
 
-    # ---------- safe image loader ----------
     def _safe_load_image(self, path, texture_tag):
         try:
             if not path or not os.path.exists(path):
@@ -209,7 +218,6 @@ class GWASApp:
                 self.add_log(f"[IMG] Failed to load image '{path}': {e}", error=True)
             return None
 
-    # ---------------- Floating windows ----------------
     def ensure_log_window(self, show=True):
         if not dpg.does_item_exist("LogWindow"):
             with dpg.window(label="Log", tag="LogWindow", width=700, height=420, pos=(80, 80),
@@ -239,7 +247,6 @@ class GWASApp:
         if show:
             dpg.show_item("ResultsWindow")
 
-    # ---------------- UI build ----------------
     def setup_gui(self):
         setup_app_chrome(base_size=20)
         build_dark_theme()
@@ -263,8 +270,8 @@ class GWASApp:
             self._font_subtitle = None
 
         with dpg.window(
-            tag="PrimaryWindow",
-            no_title_bar=True, no_move=True, no_resize=True, no_close=True, no_collapse=True, pos=(0, 0)
+                tag="PrimaryWindow",
+                no_title_bar=True, no_move=True, no_resize=True, no_close=True, no_collapse=True, pos=(0, 0)
         ):
             pass
         dpg.set_primary_window("PrimaryWindow", True)
@@ -326,6 +333,7 @@ class GWASApp:
 
         cb_map = {
             "file_dialog_vcf": self.callback_vcf,
+            "file_dialog_vcf2": self.callback_vcf2,
             "file_dialog_variants": self.callback_variants,
             "file_dialog_pheno": self.callback_pheno,
             "file_dialog_cov": self.callback_cov,
@@ -345,7 +353,7 @@ class GWASApp:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=False)
 
-        self.show_page("pre_sam")
+        self.show_page("ref_manager")
 
         self.apply_component_themes()
         self._check_cli_versions()
@@ -353,10 +361,8 @@ class GWASApp:
         self.ensure_log_window(show=False)
         self.ensure_results_window(show=False)
 
-        # mark GUI as ready (safe to log and load images)
         self._gui_ready = True
 
-    # ----------- nav helpers -----------
     def _nav_click(self, sender, app_data, user_data):
         key = user_data
         self.add_log(f"[NAV] Button clicked -> '{key}'")
@@ -388,10 +394,7 @@ class GWASApp:
         for k, v in found.items():
             self._pages.setdefault(k, v)
 
-    # ---------------- dialogs ----------------
     def _build_file_dialogs(self):
-        """Create plain file dialogs (no quickbar/buttons)."""
-
         def _new_dialog(tag: str, file_count: int, exts: list, directory_selector: bool = False):
             with dpg.file_dialog(
                     directory_selector=directory_selector,
@@ -401,7 +404,7 @@ class GWASApp:
                     tag=tag,
                     width=980,
                     height=600,
-                    default_path=self.default_path,  # start at HOME
+                    default_path=self.default_path,
                     modal=True
             ):
                 for label, color in exts:
@@ -412,14 +415,17 @@ class GWASApp:
             except Exception:
                 pass
 
-        # VCF
         _new_dialog(
             tag="file_dialog_vcf",
             file_count=3,
             exts=[("Source files (*.vcf *.gz){.vcf,.gz}", (255, 255, 0, 255))]
         )
+        _new_dialog(
+            tag="file_dialog_vcf2",
+            file_count=3,
+            exts=[("Source files (*.vcf *.gz){.vcf,.gz}", (255, 255, 0, 255))]
+        )
 
-        # IDs list
         _new_dialog(
             tag="file_dialog_variants",
             file_count=3,
@@ -428,8 +434,6 @@ class GWASApp:
                 (".*", (200, 200, 200, 255)),
             ]
         )
-
-        # Phenotype
         _new_dialog(
             tag="file_dialog_pheno",
             file_count=3,
@@ -438,8 +442,6 @@ class GWASApp:
                 (".*", (200, 200, 200, 255)),
             ]
         )
-
-        # Covariates
         _new_dialog(
             tag="file_dialog_cov",
             file_count=3,
@@ -448,8 +450,6 @@ class GWASApp:
                 (".*", (200, 200, 200, 255)),
             ]
         )
-
-        # PLINK .bed
         _new_dialog(
             tag="file_dialog_bed",
             file_count=3,
@@ -458,8 +458,6 @@ class GWASApp:
                 (".*", (200, 200, 200, 255)),
             ]
         )
-
-        # Blacklist/regions
         _new_dialog(
             tag="file_dialog_blacklist",
             file_count=1,
@@ -468,25 +466,20 @@ class GWASApp:
                 (".*", (200, 200, 200, 255)),
             ]
         )
-
-        # FASTA
         _new_dialog(
             tag="file_dialog_fasta",
             file_count=1,
             exts=[("Reference (*.fa *.fasta *.fa.gz){.fa,.fasta,.fa.gz}", (150, 200, 255, 255))]
         )
-
-        # BAM (samtools preprocess)
         _new_dialog(
             tag="file_dialog_bam",
             file_count=1,
             exts=[
+                (".sam", (180, 180, 180, 255)),  # NEW
                 (".bam", (255, 180, 120, 255)),
                 (".*", (200, 200, 200, 255)),
             ]
         )
-
-        # BAM (variant calling)
         _new_dialog(
             tag="file_dialog_bam_vc",
             file_count=1,
@@ -495,8 +488,6 @@ class GWASApp:
                 (".*", (200, 200, 200, 255)),
             ]
         )
-
-        # BAM list (-b)
         _new_dialog(
             tag="file_dialog_bamlist",
             file_count=1,
@@ -505,8 +496,6 @@ class GWASApp:
                 (".*", (200, 200, 200, 255)),
             ]
         )
-
-        # Choose output folder (directory selector)
         with dpg.file_dialog(
                 directory_selector=True,
                 show=False,
@@ -525,7 +514,6 @@ class GWASApp:
         except Exception:
             pass
 
-    # ---------------- header ----------------
     def _build_header(self, parent, big: bool = False):
         with dpg.group(parent=parent, horizontal=True, horizontal_spacing=8):
             logo_path = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
@@ -542,7 +530,130 @@ class GWASApp:
                 dpg.add_spacer(width=10)
                 dpg.add_text("", color=(220, 200, 120) if self.night_mode else (40, 90, 40))
 
-    # ---------------- navigation ----------------
+    def run_ld_analysis(self, s, data):
+        # Gather inputs
+        bed_path = self._get_appdata_path_safe(self.bed_app_data)
+        vcf_path = self._get_appdata_path_safe(self.vcf_app_data)
+        if not bed_path and not vcf_path:
+            self.add_log("Please select a PLINK BED or a VCF file.", error=True)
+            return
+
+        try:
+            window_kb = int(dpg.get_value(self.ld_window_kb)) if dpg.does_item_exist(self.ld_window_kb) else 500
+            window_snps = int(dpg.get_value(self.ld_window_snps)) if dpg.does_item_exist(self.ld_window_snps) else 5000
+            max_kb = int(dpg.get_value(self.ld_max_dist_kb)) if dpg.does_item_exist(self.ld_max_dist_kb) else 1000
+            min_r2 = float(dpg.get_value(self.ld_min_r2)) if dpg.does_item_exist(self.ld_min_r2) else 0.1
+            region = dpg.get_value(self.ld_region_inp).strip() if dpg.does_item_exist(self.ld_region_inp) else ""
+            do_decay = bool(dpg.get_value(self.ld_do_decay)) if dpg.does_item_exist(self.ld_do_decay) else True
+            do_heat = bool(dpg.get_value(self.ld_do_heatmap)) if dpg.does_item_exist(self.ld_do_heatmap) else True
+            do_div = bool(dpg.get_value(self.ld_do_diversity)) if dpg.does_item_exist(self.ld_do_diversity) else True
+        except Exception as e:
+            self.add_log(f"[LD] Invalid inputs: {e}", error=True)
+            return
+
+        input_for_ws = bed_path if bed_path else vcf_path
+        self._set_workspace_dir(os.path.dirname(input_for_ws))
+
+        try:
+            from ld_utils import LDAnalyzer, LDAnalysisError
+        except Exception as e:
+            self.add_log(f"[LD] Could not import ld_utils: {e}", error=True)
+            return
+
+        analyzer = LDAnalyzer()
+        base_name = os.path.splitext(os.path.basename(input_for_ws))[0]
+        out_base = os.path.join(self._workspace_dir, f"{base_name}.ld")
+
+        results = {}
+        try:
+            if do_decay:
+                self.add_log("[LD] Computing LD decay...")
+                res = analyzer.ld_decay(
+                    out_prefix=out_base + ".decay",
+                    bfile_prefix=bed_path.replace(".bed", "") if bed_path and bed_path.endswith(".bed") else None,
+                    vcf_path=vcf_path if vcf_path else None,
+                    window_kb=window_kb,
+                    window_snps=window_snps,
+                    max_dist_kb=max_kb,
+                    min_r2=min_r2,
+                    region=region or None,
+                )
+                results.update(res)
+
+            if do_heat:
+                self.add_log("[LD] Building LD heatmap...")
+                res = analyzer.ld_heatmap(
+                    out_prefix=out_base + ".heat",
+                    bfile_prefix=bed_path.replace(".bed", "") if bed_path and bed_path.endswith(".bed") else None,
+                    vcf_path=vcf_path if vcf_path else None,
+                    region=region or None,
+                    window_snps=min(window_snps, 2000),
+                    min_r2=min_r2,
+                )
+                results.update(res)
+
+            if do_div:
+                self.add_log("[LD] Computing diversity metrics...")
+                res = analyzer.diversity(
+                    out_prefix=out_base + ".div",
+                    bfile_prefix=bed_path.replace(".bed", "") if bed_path and bed_path.endswith(".bed") else None,
+                    vcf_path=vcf_path if vcf_path else None,
+                    region=region or None,
+                )
+                results.update(res)
+        except Exception as e:
+            self.add_log(f"[LD] Analysis failed: {e}", error=True)
+            return
+
+        # Render results
+        self.ensure_results_window(show=True, title="LD Analysis")
+        dpg.delete_item(self._results_body, children_only=True)
+
+        dpg.add_button(label="Export Results (copy files)", parent=self._results_body,
+                       callback=lambda: dpg.show_item("select_directory"))
+        dpg.add_spacer(height=8, parent=self._results_body)
+
+        if "decay_png" in results and results["decay_png"] and os.path.exists(results["decay_png"]):
+            tag = "ld_decay_img"
+            wh = self._safe_load_image(results["decay_png"], tag)
+            if wh:
+                w, h = wh
+                dpg.add_text("LD decay", parent=self._results_body)
+                dpg.add_image(tag, parent=self._results_body, width=min(900, w), height=int(h * min(900, w) / w))
+                dpg.add_text(f"CSV: {results.get('decay_csv', '')}", parent=self._results_body)
+                dpg.add_spacer(height=6, parent=self._results_body)
+
+        if "heat_png" in results and results["heat_png"] and os.path.exists(results["heat_png"]):
+            tag = "ld_heat_img"
+            wh = self._safe_load_image(results["heat_png"], tag)
+            if wh:
+                w, h = wh
+                dpg.add_text("LD heatmap", parent=self._results_body)
+                dpg.add_image(tag, parent=self._results_body, width=min(900, w), height=int(h * min(900, w) / w))
+                dpg.add_spacer(height=6, parent=self._results_body)
+
+        if "summary_csv" in results and os.path.exists(results["summary_csv"]):
+            import pandas as pd
+            try:
+                df = pd.read_csv(results["summary_csv"])
+                dpg.add_text("Diversity metrics", parent=self._results_body)
+                with dpg.table(parent=self._results_body, row_background=True,
+                               borders_innerH=True, borders_outerH=True,
+                               borders_innerV=True, borders_outerV=True):
+                    dpg.add_table_column(label="Metric")
+                    dpg.add_table_column(label="Value")
+                    for _, r in df.iterrows():
+                        with dpg.table_row():
+                            dpg.add_text(str(r["metric"]))
+                            try:
+                                dpg.add_text(f"{float(r['value']):.6g}")
+                            except Exception:
+                                dpg.add_text(str(r["value"]))
+            except Exception:
+                dpg.add_text(f"Summary: {results['summary_csv']}", parent=self._results_body)
+
+        self.add_log("[LD] Done.")
+
     def _bind_nav_button_theme(self, btn, active: bool):
         try:
             dpg.bind_item_theme(btn, get_primary_button_theme_tag() if active else "theme_button_secondary")
@@ -570,7 +681,6 @@ class GWASApp:
             self._bind_nav_button_theme(btn, active=(k == key))
         self._refresh_watermark()
 
-    # ---------------- tooltips ----------------
     def _build_tooltips(self):
         tooltip_pairs = [
             ("tooltip_vcf", "Select a Variant Call Format file (.vcf or .vcf.gz)."),
@@ -606,7 +716,6 @@ class GWASApp:
                 with dpg.tooltip(tag):
                     dpg.add_text(txt, color=[79, 128, 90])
 
-    # ---------------- lifecycle ----------------
     def run(self):
         dpg.create_context()
         try:
@@ -669,7 +778,6 @@ class GWASApp:
         except Exception as e:
             self.add_log(f"[wm] refresh failed: {e}", warn=True)
 
-    # -------- settings callbacks --------
     def _on_font_scale_change(self, sender, value):
         try:
             val = float(value)
@@ -691,7 +799,6 @@ class GWASApp:
         self.apply_component_themes()
         self.add_log(f"[Theme] Accent set to: {value}")
 
-    # ---------------- misc helpers ----------------
     def add_log(self, message, warn=False, error=False):
         self.ensure_log_window(show=False)
         if self.logz:
@@ -743,7 +850,40 @@ class GWASApp:
             'selections': {'file': file_path}
         })
 
-    # ---------------- callbacks: file dialogs ----------------
+    # ------------------------------------------------------------------
+    # Helpers for new modules
+    # ------------------------------------------------------------------
+    def _val(self, *tags):
+        for t in tags:
+            if dpg.does_item_exist(t):
+                v = dpg.get_value(t)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+        return ""
+
+    def _run_cmd(self, cmd, stdout_path=None):
+        self.add_log("$ " + " ".join(cmd))
+        if stdout_path:
+            with open(stdout_path, "w", encoding="utf-8") as fh:
+                p = subprocess.run(cmd, text=True, stdout=fh, stderr=subprocess.PIPE)
+            if p.stderr:
+                for ln in p.stderr.splitlines():
+                    self.add_log(ln, warn=True)
+        else:
+            p = subprocess.run(cmd, text=True, capture_output=True)
+            if p.stdout:
+                for ln in p.stdout.splitlines():
+                    self.add_log(ln)
+            if p.stderr:
+                for ln in p.stderr.splitlines():
+                    self.add_log(ln, warn=True)
+        if p.returncode != 0:
+            raise RuntimeError(f"command failed: {' '.join(cmd)}")
+        return p.returncode
+
+    # ------------------------------------------------------------------
+    # File dialog callbacks
+    # ------------------------------------------------------------------
     def callback_vcf(self, s, app_data):
         self.vcf_app_data = app_data
         vcf_path, current_path = self.get_selection_path(self.vcf_app_data)
@@ -755,6 +895,16 @@ class GWASApp:
         name = self._fmt_name(vcf_path)
         for tag in ("qc_vcf_path_lbl", "conv_vcf_path_lbl", "bcf_vcf_path_lbl"):
             self._set_text(tag, name)
+
+    def callback_vcf2(self, s, app_data):
+        self.vcf2_app_data = app_data
+        vcf_path, current_path = self.get_selection_path(self.vcf2_app_data)
+        if not vcf_path:
+            return
+        self._set_workspace_dir(os.path.dirname(vcf_path))
+        dpg.configure_item("file_dialog_variants", default_path=current_path or self.default_path)
+        self.add_log('VCF#2 Selected: ' + vcf_path)
+        self._set_text("qc_vcf2_path_lbl", self._fmt_name(vcf_path))
 
     def callback_bed(self, s, app_data):
         self.bed_app_data = app_data
@@ -830,20 +980,22 @@ class GWASApp:
             self.add_log('FASTA Selected: ' + fasta_path)
             for tag in ("bcf_ref_path_lbl", "vc_ref_path_lbl"):
                 self._set_text(tag, self._fmt_name(fasta_path))
+            if dpg.does_item_exist("ref_fasta_path_inp"):
+                dpg.set_value("ref_fasta_path_inp", fasta_path)
         except TypeError:
             self.add_log('Invalid FASTA file', error=True)
 
     def callback_bam(self, s, app_data):
         self.bam_app_data = app_data
         try:
-            bam_path, _ = self.get_selection_path(self.bam_app_data)
-            if not bam_path:
+            path, _ = self.get_selection_path(self.bam_app_data)
+            if not path:
                 return
-            self._set_workspace_dir(os.path.dirname(bam_path))
-            self.add_log('BAM Selected: ' + bam_path)
-            self._set_text("sam_bam_path_lbl", self._fmt_name(bam_path))
+            self._set_workspace_dir(os.path.dirname(path))
+            self.add_log('SAM/BAM Selected: ' + path)
+            self._set_text("sam_bam_path_lbl", self._fmt_name(path))
         except Exception:
-            self.add_log('Invalid BAM file', error=True)
+            self.add_log('Invalid SAM/BAM file', error=True)
 
     def callback_bam_vc(self, s, app_data):
         self.bam_vc_app_data = app_data
@@ -854,6 +1006,9 @@ class GWASApp:
             self._set_workspace_dir(os.path.dirname(bam_path))
             self.add_log('VC-BAM Selected: ' + bam_path)
             self._set_text("vc_bam_path_lbl", self._fmt_name(bam_path))
+            if dpg.does_item_exist(self.vc_out_prefix) and not (dpg.get_value(self.vc_out_prefix) or "").strip():
+                base = os.path.splitext(os.path.basename(bam_path))[0]
+                dpg.set_value(self.vc_out_prefix, os.path.join(self._workspace_dir, f"{base}.raw"))
         except Exception:
             self.add_log('Invalid BAM file', error=True)
 
@@ -863,25 +1018,24 @@ class GWASApp:
             lst_path, _ = self.get_selection_path(self.bamlist_app_data)
             if not lst_path:
                 return
+            self._set_workspace_dir(os.path.dirname(lst_path))
             self.add_log('BAM-list Selected: ' + lst_path)
             self._set_text("vc_bamlist_path_lbl", self._fmt_name(lst_path))
+            if dpg.does_item_exist(self.vc_out_prefix) and not (dpg.get_value(self.vc_out_prefix) or "").strip():
+                base = os.path.splitext(os.path.basename(lst_path))[0]
+                dpg.set_value(self.vc_out_prefix, os.path.join(self._workspace_dir, f"{base}.raw"))
         except Exception:
             self.add_log('Invalid BAM-list file', error=True)
 
     def callback_save_results(self, s, app_data):
-        # Figure out a real directory to save into
         sel_path, cur_dir = self.get_selection_path(app_data)
         base = sel_path or cur_dir or self._workspace_dir
         if not base:
             self.add_log('No directory selected.', error=True)
             return
-
-        # If a file was clicked, use its parent; ensure absolute dir
         if not os.path.isdir(base):
             base = os.path.dirname(base)
         base = os.path.abspath(base)
-
-        # Perform the export from the current workspace folder
         save_dir = self.helper.save_results(
             current_dir=self._workspace_dir,
             save_dir=base,
@@ -903,28 +1057,165 @@ class GWASApp:
     def cancel_callback_directory(self, s, app_data):
         self.add_log('Process Canceled')
 
-    # ---------------- actions ----------------
-    def run_samtools_preprocess(self, s, data):
-        try:
-            bam_in = self.get_selection_path(self.bam_app_data)[0]
-        except Exception:
-            self.add_log('Please select a BAM file first (Preprocess samtools).', error=True)
+    # ------------------------------------------------------------------
+    # New actions: Reference Manager, FASTQ QC, Alignment
+    # ------------------------------------------------------------------
+    def ref_build_indexes(self, s=None, a=None):
+        fasta = self._val("ref_fasta_path_inp", "ref_fasta_path")
+        out_dir = self._val("ref_out_dir_inp", "ref_out_dir") or (os.path.dirname(fasta) if fasta else "")
+        if not fasta or not os.path.exists(fasta):
+            self.add_log("[REF] Please provide a valid FASTA", error=True)
             return
-        if not bam_in:
-            self.add_log('Please select a BAM file first (Preprocess samtools).', error=True)
+        if not out_dir:
+            out_dir = os.path.dirname(fasta)
+        os.makedirs(out_dir, exist_ok=True)
+        self._set_workspace_dir(out_dir)
+
+        base = os.path.splitext(os.path.basename(fasta))[0]
+        bt2_prefix = os.path.join(out_dir, base)
+        mmi_path = os.path.join(out_dir, base + ".mmi")
+        dict_path = os.path.join(out_dir, base + ".dict")
+
+        try:
+            self.add_log("[REF] Building samtools faidx")
+            self._run_cmd([resolve_tool("samtools"), "faidx", fasta])
+
+            self.add_log("[REF] Building sequence dictionary")
+            self._run_cmd([resolve_tool("samtools"), "dict", fasta, "-o", dict_path])
+
+            self.add_log("[REF] Building minimap2 index (.mmi)")
+            self._run_cmd(["minimap2", "-d", mmi_path, fasta])
+
+            self.add_log("[REF] Building bowtie2 index")
+            self._run_cmd(["bowtie2-build", fasta, bt2_prefix])
+
+            self._ref_info = {"fasta": fasta, "out_dir": out_dir, "prefix": os.path.join(out_dir, base)}
+            self.add_log("[REF] Indexing completed.")
+            if dpg.does_item_exist("ref_status"):
+                dpg.set_value("ref_status", f"OK\nFASTA: {fasta}\nOUT: {out_dir}")
+        except Exception as e:
+            self.add_log(f"[REF] Failed: {e}", error=True)
+
+    def run_fastq_qc(self, s=None, a=None):
+        r1 = self._val("fq1_inp", "fq1_path_inp", "fq1_path")
+        r2 = self._val("fq2_inp", "fq2_path_inp", "fq2_path")
+        out_dir = self._val("fq_out_dir_inp", "fq_out_dir") or self.workspace_dir
+        if not r1:
+            self.add_log("[QC] Please select FASTQ #1", error=True)
+            return
+        os.makedirs(out_dir, exist_ok=True)
+        self._set_workspace_dir(out_dir)
+
+        try:
+            self.add_log("[QC] Running FastQC")
+            cmd = ["fastqc", "-o", out_dir, "--threads", "4", r1]
+            if r2:
+                cmd.append(r2)
+            self._run_cmd(cmd)
+
+            try:
+                self.add_log("[QC] Running MultiQC")
+                self._run_cmd(["multiqc", out_dir, "-o", out_dir])
+            except FileNotFoundError:
+                self.add_log("[QC] multiqc not found; skipping.", warn=True)
+
+            msg = f"Reports in: {out_dir}"
+            if dpg.does_item_exist("qc_status"):
+                dpg.set_value("qc_status", msg)
+            self.add_log("[QC] Done. " + msg)
+        except Exception as e:
+            self.add_log(f"[QC] Failed: {e}", error=True)
+
+    def run_alignment(self, s=None, a=None):
+        platform = (dpg.get_value("align_platform") if dpg.does_item_exist("align_platform") else "illumina").lower()
+        r1 = self._val("aln_r1_inp", "aln_r1_path_inp", "aln_r1_path")
+        r2 = self._val("aln_r2_inp", "aln_r2_path_inp", "aln_r2_path")
+        out_dir = self._val("aln_out_dir_inp", "aln_out_dir") or (self._ref_info.get("out_dir") or self.workspace_dir)
+
+        if not r1:
+            self.add_log("[ALN] Please select reads (R1)", error=True)
+            return
+        if not self._ref_info.get("prefix"):
+            self.add_log("[ALN] Please build reference indexes first.", error=True)
             return
 
-        self._set_workspace_dir(os.path.dirname(bam_in))
+        os.makedirs(out_dir, exist_ok=True)
+        self._set_workspace_dir(out_dir)
+
+        base = os.path.splitext(os.path.basename(r1))[0]
+        sam_out = os.path.join(out_dir, f"{base}.sam")
+
+        try:
+            if platform in ("nanopore", "ont", "pacbio", "pb", "long", "longreads"):
+                mmi = self._ref_info["prefix"] + ".mmi"
+                if not os.path.exists(mmi):
+                    self.add_log("[ALN] Missing .mmi index. Build Reference Manager first.", error=True)
+                    return
+                preset = "map-ont" if platform in ("nanopore", "ont") else "map-pb"
+                self.add_log(f"[ALN] minimap2 ({preset}) → {sam_out}")
+                cmd = ["minimap2", "-t", "4", "-ax", preset, mmi, r1]
+                if r2:
+                    cmd.append(r2)
+                self._run_cmd(cmd, stdout_path=sam_out)
+            else:
+                bt2 = self._ref_info["prefix"]
+                self.add_log(f"[ALN] bowtie2 → {sam_out}")
+                if r2:
+                    cmd = ["bowtie2", "-x", bt2, "-1", r1, "-2", r2, "-S", sam_out, "-p", "4"]
+                else:
+                    cmd = ["bowtie2", "-x", bt2, "-U", r1, "-S", sam_out, "-p", "4"]
+                self._run_cmd(cmd)
+
+            self.add_log(f"[ALN] Done. SAM: {sam_out}")
+            if dpg.does_item_exist("aln_status"):
+                dpg.set_value("aln_status", f"SAM: {sam_out}")
+        except Exception as e:
+            self.add_log(f"[ALN] Failed: {e}", error=True)
+
+    # ------------------------------------------------------------------
+    # Existing actions (unchanged)
+    # ------------------------------------------------------------------
+    def run_samtools_preprocess(self, s, data):
+        try:
+            in_path = self.get_selection_path(self.bam_app_data)[0]
+        except Exception:
+            self.add_log('Please select a SAM/BAM file first (Preprocess samtools).', error=True)
+            return
+        if not in_path or not os.path.exists(in_path):
+            self.add_log('Please select a SAM/BAM file first (Preprocess samtools).', error=True)
+            return
+
+        self._set_workspace_dir(os.path.dirname(in_path))
 
         threads = max(1, int(dpg.get_value(self.sam_threads)))
         remove_dups = bool(dpg.get_value(self.sam_remove_dups))
         compute_stats = bool(dpg.get_value(self.sam_compute_stats))
         out_prefix = (dpg.get_value(self.sam_out_prefix) or None)
 
-        self.add_log("Running samtools preprocess...")
+        ext = os.path.splitext(in_path)[1].lower()
+        bam_for_pipeline = in_path
+        tmp_created = False
+
         try:
+            if ext == ".sam":
+                base = os.path.splitext(os.path.basename(in_path))[0]
+                bam_for_pipeline = os.path.join(self._workspace_dir, f"{base}.unsorted.bam")
+                self.add_log(f"Converting SAM -> BAM: {bam_for_pipeline}")
+                cmd = [resolve_tool("samtools"), "view", "-@", str(threads), "-bS", in_path, "-o", bam_for_pipeline]
+                p = subprocess.run(cmd, text=True, capture_output=True)
+                if p.stdout:
+                    for ln in p.stdout.splitlines():
+                        self.add_log(ln)
+                if p.stderr:
+                    for ln in p.stderr.splitlines():
+                        self.add_log(ln, warn=True)
+                if p.returncode != 0 or (not os.path.exists(bam_for_pipeline)):
+                    raise RuntimeError("SAM to BAM conversion failed")
+                tmp_created = True
+
+            self.add_log("Running samtools preprocess...")
             outs = self.sam.preprocess(
-                input_bam=bam_in,
+                input_bam=bam_for_pipeline,
                 out_prefix=out_prefix,
                 threads=threads,
                 remove_dups=remove_dups,
@@ -936,12 +1227,19 @@ class GWASApp:
             self.add_log(f"samtools preprocess: Done. Final BAM: {outs.final_bam}")
             if outs.bai:
                 self.add_log(f"Index: {outs.bai}")
-            for k, p in outs.stats_files.items():
-                self.add_log(f"{k} report: {p}")
+            for k, pth in outs.stats_files.items():
+                self.add_log(f"{k} report: {pth}")
+
         except SamtoolsError as e:
             self.add_log(f"samtools error: {e}", error=True)
         except Exception as e:
             self.add_log(f"Unexpected error: {e}", error=True)
+        finally:
+            if tmp_created:
+                try:
+                    os.remove(bam_for_pipeline)
+                except Exception:
+                    pass
 
     def run_variant_calling(self, s, data):
         if not self.vcaller:
@@ -962,12 +1260,28 @@ class GWASApp:
 
         self._set_workspace_dir(os.path.dirname(bam_spec))
 
+        # Pre-flight checks: BAM index and FASTA index
+        if os.path.isfile(bam_spec) and not os.path.exists(bam_spec + ".bai"):
+            self.add_log("[VC] .bai not found; indexing BAM...")
+            subprocess.run([resolve_tool("samtools"), "index", bam_spec], check=False, text=True, capture_output=True)
+
+        if not os.path.exists(fasta_path + ".fai"):
+            self.add_log("[VC] FASTA .fai not found; building faidx...")
+            subprocess.run([resolve_tool("samtools"), "faidx", fasta_path], check=False, text=True, capture_output=True)
+
         regions_path = self._get_appdata_path_safe(self.blacklist_app_data)
         threads = max(1, int(dpg.get_value(self.vc_threads)))
         ploidy = max(1, int(dpg.get_value(self.vc_ploidy)))
         min_bq = max(0, int(dpg.get_value(self.vc_min_bq)))
         min_mq = max(0, int(dpg.get_value(self.vc_min_mq)))
         outpfx = dpg.get_value(self.vc_out_prefix) or None
+
+        # Generate default output prefix if empty
+        if not outpfx:
+            base = os.path.basename(bam_spec)
+            base = os.path.splitext(base)[0]
+            outpfx = os.path.join(self._workspace_dir, f"{base}.raw")
+            dpg.set_value(self.vc_out_prefix, outpfx)
 
         self.add_log("Running variant calling...")
         try:
@@ -1016,6 +1330,10 @@ class GWASApp:
         filt = dpg.get_value(self.bcf_filter_expr) or None
         outpfx = dpg.get_value(self.bcf_out_prefix) or None
 
+        filltags = bool(dpg.get_value(self.bcf_filltags)) if dpg.does_item_exist(self.bcf_filltags) else False
+        make_snps = bool(dpg.get_value(self.bcf_make_snps)) if dpg.does_item_exist(self.bcf_make_snps) else False
+        make_svs = bool(dpg.get_value(self.bcf_make_svs)) if dpg.does_item_exist(self.bcf_make_svs) else False
+
         self.add_log("Running bcftools preprocess...")
         try:
             final_vcf, stats = self.bcft.preprocess(
@@ -1032,7 +1350,8 @@ class GWASApp:
                 remove_filtered=rmflt,
                 compress_output=compr,
                 index_output=index,
-                keep_temps=False
+                keep_temps=False,
+                fill_tags=filltags,
             )
             self.bcf_out_last = final_vcf
             self._set_virtual_selection('vcf_app_data', final_vcf)
@@ -1042,6 +1361,31 @@ class GWASApp:
             self.add_log("bcftools preprocess: Done.")
             if stats and os.path.exists(stats):
                 self.add_log(f"bcftools stats saved: {stats}")
+
+            stem = final_vcf
+            if stem.endswith(".vcf.gz"):
+                stem = stem[:-7]
+            elif stem.endswith(".vcf"):
+                stem = stem[:-4]
+
+            if make_snps:
+                snps_out = f"{stem}.snps.vcf.gz"
+                cmd = [resolve_tool("bcftools"), "view", "-v", "snps", final_vcf, "-Oz", "-o", snps_out]
+                self.add_log("$ " + " ".join(cmd))
+                subprocess.run(cmd, check=False, text=True, capture_output=True)
+                subprocess.run([resolve_tool("tabix"), "-f", "-p", "vcf", snps_out], check=False, text=True,
+                               capture_output=True)
+                self.add_log(f"SNP-only: {snps_out}")
+
+            if make_svs:
+                sv_out = f"{stem}.sv.vcf.gz"
+                cmd = [resolve_tool("bcftools"), "view", "-V", "snps,indels", final_vcf, "-Oz", "-o", sv_out]
+                self.add_log("$ " + " ".join(cmd))
+                subprocess.run(cmd, check=False, text=True, capture_output=True)
+                subprocess.run([resolve_tool("tabix"), "-f", "-p", "vcf", sv_out], check=False, text=True,
+                               capture_output=True)
+                self.add_log(f"SV-only:  {sv_out}")
+
         except BCFtoolsError as e:
             self.add_log(f"bcftools error: {e}", error=True)
         except Exception as e:
@@ -1049,101 +1393,110 @@ class GWASApp:
 
     def run_vcf_qc(self, s, data):
         try:
-            vcf_path = self.get_selection_path(self.vcf_app_data)[0]
+            vcf1 = self.get_selection_path(self.vcf_app_data)[0]
         except Exception:
-            self.add_log('Please select a VCF file first.', error=True)
-            return
-        if not vcf_path:
+            vcf1 = None
+        try:
+            vcf2 = self.get_selection_path(self.vcf2_app_data)[0]
+        except Exception:
+            vcf2 = None
+
+        if not vcf1 and not vcf2:
             self.add_log('Please select a VCF file first.', error=True)
             return
 
-        self._set_workspace_dir(os.path.dirname(vcf_path))
+        vcf_main = vcf1 or vcf2
+        self._set_workspace_dir(os.path.dirname(vcf_main))
 
-        _ = bool(dpg.get_value(self.deep_scan))  # reserved flag (currently unused)
         self.add_log('Running VCF Quality Check...')
-        report = self.vcf_qc_checker.evaluate(vcf_path, log_fn=self.add_log)
+        reports = []
+        names = []
+        if vcf1:
+            r1 = self.vcf_qc_checker.evaluate(vcf1, log_fn=self.add_log)
+            reports.append(r1);
+            names.append(self._fmt_name(vcf1))
+        if vcf2:
+            r2 = self.vcf_qc_checker.evaluate(vcf2, log_fn=self.add_log)
+            reports.append(r2);
+            names.append(self._fmt_name(vcf2))
 
         self.ensure_results_window(show=True, title="VCF QC Results")
         dpg.delete_item(self._results_body, children_only=True)
 
-        # Header actions
         with dpg.group(parent=self._results_body, horizontal=True, horizontal_spacing=8):
             dpg.add_button(label="Export Results (copy files)", callback=lambda: dpg.show_item("select_directory"))
-            dpg.add_button(label="Save QC Report (.txt)", callback=lambda: self._save_qc_report(vcf_path, report))
+            if vcf1:
+                dpg.add_button(label="Save QC Report VCF#1", callback=lambda: self._save_qc_report(vcf1, reports[0]))
+            if vcf2:
+                idx = 1 if vcf1 else 0
+                dpg.add_button(label="Save QC Report VCF#2", callback=lambda: self._save_qc_report(vcf2, reports[idx]))
 
         dpg.add_spacer(height=10, parent=self._results_body)
 
-        # Headline
-        dpg.add_text(
-            f"VCF-QAScore: {report.score:.1f}   |   Verdict: {report.verdict}",
-            parent=self._results_body
-        )
-        dpg.add_text(
-            f"Samples: {int(report.metrics.get('samples', 0))}",
-            parent=self._results_body
-        )
+        def _render_one(tab_parent, name, report):
+            dpg.add_text(f"VCF: {name}", parent=tab_parent)
+            dpg.add_text(f"VCF-QAScore: {report.score:.1f}   |   Verdict: {report.verdict}", parent=tab_parent)
+            dpg.add_text(f"Samples: {int(report.metrics.get('samples', 0))}", parent=tab_parent)
 
-        # Data type (SNPs / SVs) shown right under Samples
-        try:
-            dt = getattr(report, "data_type", None)
-            if not dt:
-                # Fallback: infer from metrics if the field wasn't populated
-                s = float(report.metrics.get("snps", 0.0) or 0.0)
-                i = float(report.metrics.get("indels", 0.0) or 0.0)
-                dt = "SNPs" if (s > 0 and i == 0) else "SVs"
-            dpg.add_text(f"Data type: {dt}", parent=self._results_body)
-        except Exception:
-            # Safe fallback to ensure the line always appears
-            dpg.add_text("Data type: SVs", parent=self._results_body)
+            try:
+                dt = getattr(report, "data_type", None)
+                if not dt:
+                    s = float(report.metrics.get("snps", 0.0) or 0.0)
+                    i = float(report.metrics.get("indels", 0.0) or 0.0)
+                    dt = "SNPs" if (s > 0 and i == 0) else "SVs"
+                dpg.add_text(f"Data type: {dt}", parent=tab_parent)
+            except Exception:
+                dpg.add_text("Data type: SVs", parent=tab_parent)
 
-        # Hard fails (early exit)
-        if report.hard_fail_reasons:
-            dpg.add_spacer(height=4, parent=self._results_body)
-            dpg.add_text("Hard fail reasons:", parent=self._results_body)
-            for r in report.hard_fail_reasons:
-                dpg.add_text(f"- {r}", parent=self._results_body)
-            return
+            if report.hard_fail_reasons:
+                dpg.add_spacer(height=4, parent=tab_parent)
+                dpg.add_text("Hard fail reasons:", parent=tab_parent)
+                for r in report.hard_fail_reasons:
+                    dpg.add_text(f"- {r}", parent=tab_parent)
+                return
 
-        # Recommendations
-        dpg.add_spacer(height=10, parent=self._results_body)
-        dpg.add_text("Recommendations:", parent=self._results_body)
-        if report.recommendations:
-            for r in report.recommendations:
-                dpg.add_text(f"- {r}", parent=self._results_body)
-        else:
-            dpg.add_text("- No specific recommendations.", parent=self._results_body)
+            dpg.add_spacer(height=10, parent=tab_parent)
+            dpg.add_text("Recommendations:", parent=tab_parent)
+            if report.recommendations:
+                for r in report.recommendations:
+                    dpg.add_text(f"- {r}", parent=tab_parent)
+            else:
+                dpg.add_text("- No specific recommendations.", parent=tab_parent)
 
-        # Metrics table
-        dpg.add_spacer(height=10, parent=self._results_body)
-        dpg.add_text("Metrics:", parent=self._results_body)
-        with dpg.table(row_background=True, borders_innerH=True, borders_outerH=True,
-                       borders_innerV=True, borders_outerV=True, parent=self._results_body):
-            dpg.add_table_column(label="Metric")
-            dpg.add_table_column(label="Value")
-            for k, v in sorted(report.metrics.items()):
-                with dpg.table_row():
-                    dpg.add_text(str(k))
-                    dpg.add_text(f"{v:.6g}" if isinstance(v, (int, float)) else str(v))
+            dpg.add_spacer(height=10, parent=tab_parent)
+            dpg.add_text("Metrics:", parent=tab_parent)
+            with dpg.table(row_background=True, borders_innerH=True, borders_outerH=True,
+                           borders_innerV=True, borders_outerV=True, parent=tab_parent):
+                dpg.add_table_column(label="Metric")
+                dpg.add_table_column(label="Value")
+                for k, v in sorted(report.metrics.items()):
+                    with dpg.table_row():
+                        dpg.add_text(str(k))
+                        dpg.add_text(f"{v:.6g}" if isinstance(v, (int, float)) else str(v))
 
-        # Plots
-        dpg.add_spacer(height=10, parent=self._results_body)
-        dpg.add_text("QC Plots:", parent=self._results_body)
-        with dpg.tab_bar(parent=self._results_body) as qc_tabbar:
-            d = report.dists or {}
-            self._add_hist_plot(qc_tabbar, "Depth (DP)", d.get("dp", []), bins=30,
-                                p10=report.metrics.get("dp_p10"),
-                                p50=report.metrics.get("dp_median"),
-                                p90=report.metrics.get("dp_p90"))
-            self._add_hist_plot(qc_tabbar, "Genotype Quality (GQ)", d.get("gq", []), bins=30,
-                                p10=report.metrics.get("gq_p10"),
-                                p50=report.metrics.get("gq_median"),
-                                p90=report.metrics.get("gq_p90"))
-            self._add_hist_plot(qc_tabbar, "Allele Balance |AB - 0.5| (hets)",
-                                d.get("ab_dev", []), bins=30, x_range=(0.0, 1.0),
-                                p90=report.metrics.get("ab_dev_p90"))
-            self._add_hist_plot(qc_tabbar, "Site Missingness",
-                                d.get("site_missing", []), bins=30, x_range=(0.0, 1.0),
-                                p90=report.metrics.get("site_missing_p90"))
+            dpg.add_spacer(height=10, parent=tab_parent)
+            dpg.add_text("QC Plots:", parent=tab_parent)
+            with dpg.tab_bar(parent=tab_parent) as qc_tabbar:
+                d = report.dists or {}
+                self._add_hist_plot(qc_tabbar, "Depth (DP)", d.get("dp", []), bins=30,
+                                    p10=report.metrics.get("dp_p10"),
+                                    p50=report.metrics.get("dp_median"),
+                                    p90=report.metrics.get("dp_p90"))
+                self._add_hist_plot(qc_tabbar, "Genotype Quality (GQ)", d.get("gq", []), bins=30,
+                                    p10=report.metrics.get("gq_p10"),
+                                    p50=report.metrics.get("gq_median"),
+                                    p90=report.metrics.get("gq_p90"))
+                self._add_hist_plot(qc_tabbar, "Allele Balance |AB - 0.5| (hets)",
+                                    d.get("ab_dev", []), bins=30, x_range=(0.0, 1.0),
+                                    p90=report.metrics.get("ab_dev_p90"))
+                self._add_hist_plot(qc_tabbar, "Site Missingness",
+                                    d.get("site_missing", []), bins=30, x_range=(0.0, 1.0),
+                                    p90=report.metrics.get("site_missing_p90"))
+
+        with dpg.tab_bar(parent=self._results_body):
+            for name, rep in zip(names, reports):
+                with dpg.tab(label=name):
+                    _render_one(tab_parent=dpg.last_item(), name=name, report=rep)
 
     def _add_hist_plot(self, parent, title, values, bins=30, x_range=None,
                        p10=None, p50=None, p90=None):
@@ -1232,7 +1585,6 @@ class GWASApp:
             self.add_log("[ERROR] Conversion did not produce BED/BIM/FAM files.", error=True)
 
     def _build_top_snps_file(self):
-        """Create gwas_top_snps.csv in the workspace for the Top SNPs tab."""
         try:
             import pandas as pd
             if not os.path.exists(self.gwas_result_name):
@@ -1402,28 +1754,24 @@ class GWASApp:
                     bed_fixed, pheno, self.genomic_predict_name, model_nr, self.add_log,
                     bed_path, chrom_mapping
                 )
-
             elif self.algorithm == 'Random Forest (AI)':
                 gp_df = self.genomic_predict_class.run_gp_rf(
                     bed_fixed, pheno, bed_path, test_size, estimators,
                     self.genomic_predict_name, chrom_mapping, self.add_log,
                     model_nr, nr_jobs
                 )
-
             elif self.algorithm == 'XGBoost (AI)':
                 gp_df = self.genomic_predict_class.run_gp_xg(
                     bed_fixed, pheno, bed_path, test_size, estimators,
                     self.genomic_predict_name, chrom_mapping, self.add_log,
                     model_nr, max_dep_set, nr_jobs
                 )
-
             elif self.algorithm == 'Ridge Regression':
                 gp_df = self.genomic_predict_class.run_gp_ridge(
                     bed_fixed, pheno, bed_path, test_size, 1.0,
                     self.genomic_predict_name, chrom_mapping, self.add_log,
                     model_nr
                 )
-
             else:
                 self.add_log("[VAL] Running internal cross-validation (model_validation)...")
                 try:
@@ -1560,7 +1908,6 @@ class GWASApp:
         except Exception as e:
             self.add_log(f"[ERROR] Could not save QC report: {e}", error=True)
 
-    # -------- Top SNPs tab --------
     def _add_top_snps_tab(self, parent_tabbar_tag: str, top_n: int = 100):
         import pandas as pd
         path = getattr(self, "gwas_top_snps_name", "gwas_top_snps.csv")

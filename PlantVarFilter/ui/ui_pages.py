@@ -1,15 +1,306 @@
 # ui/ui_pages.py
+from __future__ import annotations
+
+from pathlib import Path
+import os
+import platform as _pf
+import subprocess
+
 import dearpygui.dearpygui as dpg
 
+# Optional preanalysis imports (Reference Manager, FASTQ QC, Alignment)
+try:
+    from PlantVarFilter.preanalysis import (
+        ReferenceManager, ReferenceIndexStatus,
+        run_fastq_qc, FastqQCReport,
+        Aligner, AlignmentResult,
+    )
+    _HAS_PRE = True
+    # ----- Platform display & mapping -----
+    PLATFORM_DISPLAY = [
+        "Illumina (short reads)",
+        "Oxford Nanopore (ONT)",
+        "PacBio HiFi (CCS)",
+        "PacBio CLR",
+    ]
+
+    DISPLAY_TO_KEY = {
+        "Illumina (short reads)": "illumina",
+        "Oxford Nanopore (ONT)": "ont",
+        "PacBio HiFi (CCS)": "hifi",
+        "PacBio CLR": "pb",
+    }
+
+    KEY_TO_MINIMAP2_PRESET = {
+        "ont": "map-ont",
+        "hifi": "map-hifi",
+        "pb": "map-pb",
+    }
+
+
+except Exception:
+    _HAS_PRE = False
+
+
+def _open_in_os(path: str):
+    try:
+        if _pf.system() == "Windows":
+            os.startfile(path)  # type: ignore
+        elif _pf.system() == "Darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception:
+        pass
+
+
+def _file_input_row(label: str, tag_key: str, parent, file_extensions: tuple[str, ...] = (".*",), app=None):
+    with dpg.group(parent=parent, horizontal=True, horizontal_spacing=8):
+        dpg.add_text(label)
+        dpg.add_input_text(tag=f"input_{tag_key}", width=460)
+        dpg.add_button(label="Browse", callback=lambda: dpg.show_item(f"dlg_{tag_key}"))
+    with dpg.file_dialog(tag=f"dlg_{tag_key}", directory_selector=False, show=False,
+                         callback=lambda s, a: dpg.set_value(f"input_{tag_key}", a["file_path_name"])):
+        for ext in file_extensions:
+            dpg.add_file_extension(ext, color=(150, 150, 150, 255))
+
+
+def _dir_input_row(label: str, tag_key: str, parent):
+    with dpg.group(parent=parent, horizontal=True, horizontal_spacing=8):
+        dpg.add_text(label)
+        dpg.add_input_text(tag=f"input_{tag_key}", width=460)
+        dpg.add_button(label="Select", callback=lambda: dpg.show_item(f"dlg_{tag_key}"))
+    with dpg.file_dialog(tag=f"dlg_{tag_key}", directory_selector=True, show=False,
+                         callback=lambda s, a: dpg.set_value(f"input_{tag_key}", a["file_path_name"])):
+        pass
+
+
+# -------------------------- Preanalysis: Reference Manager -------------------
+
+def page_reference_manager(app, parent):
+    with dpg.group(parent=parent, show=False, tag="page_ref_manager"):
+        dpg.add_text("\nReference Manager", indent=10)
+        dpg.add_spacer(height=10)
+
+        _file_input_row("Reference FASTA:", "ref_fasta", parent, (".fa", ".fasta", ".fna", ".*"), app=app)
+        _dir_input_row("Reference out dir (optional):", "ref_out_dir", parent)
+
+        dpg.add_spacer(height=6)
+        dpg.add_button(label="Build / Refresh Indexes", width=240, height=36,
+                       callback=lambda: _on_build_reference(app))
+
+        dpg.add_spacer(height=8)
+        dpg.add_text("Status:", parent=parent)
+        dpg.add_child_window(tag="ref_status_area", parent=parent, width=-1, height=240, border=True)
+    return "page_ref_manager"
+
+
+def _render_ref_status(st: ReferenceIndexStatus):
+    dpg.delete_item("ref_status_area", children_only=True)
+    lines = [
+        f"FASTA: {st.fasta}",
+        f"Directory: {st.reference_dir}",
+        f"faidx (.fai): {st.faidx or 'missing'}",
+        f"dict (.dict): {st.dict or 'missing'}",
+        f"minimap2 index (.mmi): {st.mmi or 'missing'}",
+        f"bowtie2 prefix: {st.bt2_prefix or 'missing'}",
+        "Tools: " + ", ".join(f"{k}: {'ok' if (v.get('path')) else 'missing'}" for k, v in st.tools.items()),
+        f"OK: {st.ok}",
+    ]
+    for ln in lines:
+        dpg.add_text(ln, parent="ref_status_area")
+    if st.reference_dir:
+        dpg.add_spacer(height=6, parent="ref_status_area")
+        dpg.add_button(label="Open reference folder", parent="ref_status_area",
+                       callback=lambda: _open_in_os(st.reference_dir))
+
+
+def _on_build_reference(app):
+    if not _HAS_PRE:
+        app.add_log("[REF] Preanalysis modules not available in environment.", error=True)
+        return
+    fasta = dpg.get_value("input_ref_fasta")
+    out_dir = dpg.get_value("input_ref_out_dir") or None
+    if not fasta or not Path(fasta).exists():
+        app.add_log("[REF] Select a valid FASTA file first.", warn=True)
+        return
+    rm = ReferenceManager(logger=app.add_log, workspace=app.workspace_dir)
+    st = rm.build_indices(fasta, out_dir=out_dir)
+    _render_ref_status(st)
+    app.add_log("[REF] Reference indexing finished.")
+
+
+# ------------------------------ Preanalysis: FASTQ QC ------------------------
+
+def page_fastq_qc(app, parent):
+    with dpg.group(parent=parent, show=False, tag="page_fastq_qc"):
+        dpg.add_text("\nFASTQ Quality Control", indent=10)
+        dpg.add_spacer(height=10)
+
+        with dpg.group(parent=parent, horizontal=True, horizontal_spacing=12):
+            dpg.add_text("Platform:")
+            dpg.add_combo(items=["illumina", "ont", "hifi", "pb"], default_value="illumina", width=180,
+                          tag="fq_platform")
+
+        _file_input_row("Reads #1 (R1 or single):", "fq_r1", parent, (".fastq", ".fq", ".fastq.gz", ".fq.gz", ".*"), app=app)
+        _file_input_row("Reads #2 (R2, optional):", "fq_r2", parent, (".fastq", ".fq", ".fastq.gz", ".fq.gz", ".*"), app=app)
+        _dir_input_row("Output dir (optional):", "fq_out", parent)
+
+        with dpg.group(parent=parent, horizontal=True, horizontal_spacing=12):
+            dpg.add_button(label="Run QC", width=200, height=36, callback=lambda: _on_run_fastq_qc(app))
+            dpg.add_checkbox(label="Use FastQC if available", default_value=True, tag="fq_use_fastqc")
+
+        dpg.add_spacer(height=8)
+        dpg.add_text("QC Summary:", parent=parent)
+        dpg.add_child_window(tag="fq_qc_area", parent=parent, width=-1, height=260, border=True)
+    return "page_fastq_qc"
+
+
+def _render_qc(rep: FastqQCReport):
+    dpg.delete_item("fq_qc_area", children_only=True)
+    fields = [
+        ("Platform", rep.platform),
+        ("Reads (sampled)", rep.n_reads),
+        ("Mean length", f"{rep.mean_length:.2f}"),
+        ("Median length", f"{rep.median_length:.2f}"),
+        ("GC%", f"{rep.gc_percent:.2f}"),
+        ("N%", f"{rep.n_percent:.3f}"),
+        ("Mean PHRED", "NA" if rep.mean_phred is None else f"{rep.mean_phred:.2f}"),
+        ("Verdict", rep.verdict),
+        ("Report TXT", rep.report_txt),
+    ]
+    for k, v in fields:
+        dpg.add_text(f"{k}: {v}", parent="fq_qc_area")
+    if rep.length_hist_png:
+        dpg.add_text(f"Length hist: {rep.length_hist_png}", parent="fq_qc_area")
+    if rep.gc_hist_png:
+        dpg.add_text(f"GC% hist: {rep.gc_hist_png}", parent="fq_qc_area")
+    if rep.per_cycle_q_mean_png:
+        dpg.add_text(f"Per-cycle mean PHRED: {rep.per_cycle_q_mean_png}", parent="fq_qc_area")
+    dpg.add_spacer(height=6, parent="fq_qc_area")
+    out_dir = str(Path(rep.report_txt).parent)
+    dpg.add_button(label="Open QC folder", parent="fq_qc_area",
+                   callback=lambda: _open_in_os(out_dir))
+
+
+def _on_run_fastq_qc(app):
+    if not _HAS_PRE:
+        app.add_log("[FQ-QC] Preanalysis modules not available in environment.", error=True)
+        return
+    r1 = dpg.get_value("input_fq_r1")
+    r2 = dpg.get_value("input_fq_r2") or None
+    if not r1 or not Path(r1).exists():
+        app.add_log("[FQ-QC] Select valid FASTQ file(s).", warn=True)
+        return
+    out_dir = dpg.get_value("input_fq_out") or None
+    platform = (dpg.get_value("fq_platform") or "illumina").lower()
+    use_fastqc = bool(dpg.get_value("fq_use_fastqc"))
+    app.add_log(f"[FQ-QC] Running on platform={platform}...")
+    rep = run_fastq_qc(r1, r2, platform=platform, out_dir=out_dir, use_fastqc_if_available=use_fastqc, logger=app.add_log)
+    _render_qc(rep)
+    app.add_log("[FQ-QC] Done.")
+
+
+# ------------------------------- Preanalysis: Alignment ----------------------
+
+def page_alignment(app, parent):
+    with dpg.group(parent=parent, show=False, tag="page_alignment"):
+        dpg.add_text("\nAlignment", indent=10)
+        dpg.add_spacer(height=10)
+
+        with dpg.group(parent=parent, horizontal=True, horizontal_spacing=12):
+            dpg.add_text("Platform:")
+            dpg.add_combo(items=["illumina", "ont", "hifi", "pb"], default_value="illumina", width=180,
+                          tag="aln_platform")
+
+        with dpg.collapsing_header(label="Reference", parent=parent, default_open=True):
+            dpg.add_text("For ONT/PB: select FASTA or .mmi\nFor Illumina: select bowtie2 prefix base path (no suffix).")
+            _file_input_row("Reference (.fa/.mmi or bt2 prefix)", "aln_reference", parent,
+                            (".fa", ".fasta", ".fna", ".mmi", ".*"))
+
+        with dpg.collapsing_header(label="Reads", parent=parent, default_open=True):
+            _file_input_row("Reads #1 (R1 or single):", "aln_r1", parent,
+                            (".fastq", ".fq", ".fastq.gz", ".fq.gz", ".*"))
+            _file_input_row("Reads #2 (R2, optional):", "aln_r2", parent,
+                            (".fastq", ".fq", ".fastq.gz", ".fq.gz", ".*"))
+
+        with dpg.group(parent=parent, horizontal=True, horizontal_spacing=12):
+            dpg.add_text("Threads")
+            dpg.add_input_int(tag="aln_threads", default_value=8, min_value=1, width=80)
+            dpg.add_checkbox(label="Save SAM", tag="aln_save_sam")
+            dpg.add_checkbox(label="Mark duplicates", default_value=True, tag="aln_markdup")
+
+        with dpg.collapsing_header(label="Read Group (optional)", parent=parent, default_open=False):
+            for k in ("ID", "SM", "LB", "PL", "PU"):
+                with dpg.group(horizontal=True, horizontal_spacing=8):
+                    dpg.add_text(k)
+                    dpg.add_input_text(tag=f"aln_rg_{k}", width=240)
+
+        dpg.add_spacer(height=6)
+        dpg.add_button(label="Run Alignment", width=200, height=36, callback=lambda: _on_run_alignment(app))
+
+        dpg.add_spacer(height=8)
+        dpg.add_text("Result:", parent=parent)
+        dpg.add_child_window(tag="aln_result_area", parent=parent, width=-1, height=240, border=True)
+    return "page_alignment"
+
+
+def _on_run_alignment(app):
+    if not _HAS_PRE:
+        app.add_log("[ALN] Preanalysis modules not available in environment.", error=True)
+        return
+    ref = dpg.get_value("input_aln_reference")
+    r1 = dpg.get_value("input_aln_r1")
+    r2 = dpg.get_value("input_aln_r2") or None
+    platform = (dpg.get_value("aln_platform") or "illumina").lower()
+    threads = dpg.get_value("aln_threads") or 8
+    save_sam = bool(dpg.get_value("aln_save_sam"))
+    markdup = bool(dpg.get_value("aln_markdup"))
+    if not ref or not Path(ref).exists():
+        app.add_log("[ALN] Select a valid reference (.fa/.mmi or bowtie2 prefix path).", warn=True)
+        return
+    if not r1 or not Path(r1).exists():
+        app.add_log("[ALN] Select valid FASTQ reads.", warn=True)
+        return
+    rg = {}
+    for k in ("ID", "SM", "LB", "PL", "PU"):
+        v = dpg.get_value(f"aln_rg_{k}")
+        if v:
+            rg[k] = v
+    aln = Aligner(logger=app.add_log, workspace=app.workspace_dir)
+    if platform in {"ont", "hifi", "pb"}:
+        preset = "map-ont" if platform == "ont" else ("map-hifi" if platform == "hifi" else "map-pb")
+        reads = [r1] if not r2 else [r1, r2]
+        res = aln.minimap2(ref, reads, preset=preset, threads=threads, read_group=rg or None,
+                           save_sam=save_sam, mark_duplicates=markdup, out_dir=app.workspace_dir)
+    else:
+        res = aln.bowtie2(ref, r1, r2, threads=threads, read_group=rg or None,
+                          save_sam=save_sam, mark_duplicates=markdup, out_dir=app.workspace_dir)
+    dpg.delete_item("aln_result_area", children_only=True)
+    dpg.add_text(f"Tool: {res.tool}", parent="aln_result_area")
+    if res.sam:
+        dpg.add_text(f"SAM: {res.sam}", parent="aln_result_area")
+    dpg.add_text(f"BAM: {res.bam}", parent="aln_result_area")
+    dpg.add_text(f"BAI: {res.bai}", parent="aln_result_area")
+    dpg.add_text(f"flagstat: {res.flagstat}", parent="aln_result_area")
+    dpg.add_text(f"Elapsed: {res.elapsed_sec:.1f} sec", parent="aln_result_area")
+    dpg.add_spacer(height=6, parent="aln_result_area")
+    dpg.add_button(label="Open alignment folder", parent="aln_result_area",
+                   callback=lambda: _open_in_os(str(Path(res.bam).parent)))
+    app.add_log("[ALN] Alignment finished.")
+
+
+# ------------------------------ Existing Pages -------------------------------
 
 def page_preprocess_samtools(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_pre_sam"):
-        dpg.add_text("\nClean BAM: sort / fixmate / markdup / index + QC reports", indent=10)
+        dpg.add_text("\nClean BAM from SAM/BAM: sort / fixmate / markdup / index + QC reports", indent=10)
         dpg.add_spacer(height=10)
+
         with dpg.group(horizontal=True, horizontal_spacing=60):
             with dpg.group():
                 bam_btn = dpg.add_button(
-                    label="Choose a BAM file",
+                    label="Choose SAM/BAM",
                     callback=lambda: dpg.show_item("file_dialog_bam"),
                     width=220,
                     tag="tooltip_bam_sam",
@@ -209,6 +500,11 @@ def page_preprocess_bcftools(app, parent):
                 app.bcf_rmflt = dpg.add_checkbox(label="Keep only PASS (remove filtered)", default_value=False)
                 app._inputs.append(app.bcf_rmflt)
 
+                app.bcf_filltags = dpg.add_checkbox(
+                    label="Fill tags (AC, AN, AF, MAF, HWE) before filtering", default_value=True
+                )
+                app._inputs.append(app.bcf_filltags)
+
                 dpg.add_spacer(height=6)
                 app.bcf_filter_expr = dpg.add_input_text(
                     label="bcftools filter expression (optional)",
@@ -224,6 +520,13 @@ def page_preprocess_bcftools(app, parent):
                     width=320,
                 )
                 app._inputs.append(app.bcf_out_prefix)
+
+                dpg.add_spacer(height=6)
+                app.bcf_make_snps = dpg.add_checkbox(label="Produce SNP-only VCF", default_value=False)
+                app._inputs.append(app.bcf_make_snps)
+
+                app.bcf_make_svs = dpg.add_checkbox(label="Produce SV-only VCF", default_value=False)
+                app._inputs.append(app.bcf_make_svs)
 
                 dpg.add_spacer(height=12)
                 run_bcf = dpg.add_button(
@@ -250,6 +553,15 @@ def page_check_vcf(app, parent):
                 )
                 app._secondary_buttons.append(vcf_btn_qc)
                 dpg.add_text("", tag="qc_vcf_path_lbl", wrap=500)
+
+                dpg.add_spacer(height=6)
+                vcf_btn_qc2 = dpg.add_button(
+                    label="Choose another VCF (optional)",
+                    callback=lambda: dpg.show_item("file_dialog_vcf2"),
+                    width=220,
+                )
+                app._secondary_buttons.append(vcf_btn_qc2)
+                dpg.add_text("", tag="qc_vcf2_path_lbl", wrap=500)
 
                 dpg.add_spacer(height=6)
                 bl_btn = dpg.add_button(
@@ -335,6 +647,109 @@ def page_convert_plink(app, parent):
                 )
                 app._primary_buttons.append(convert_btn)
     return "page_plink"
+
+def page_ld_analysis(app, parent):
+    with dpg.group(parent=parent, show=False, tag="page_ld"):
+        dpg.add_text("\nLD analysis: LD decay, LD heatmap, and diversity metrics", indent=10)
+        dpg.add_spacer(height=10)
+
+        with dpg.group(horizontal=True, horizontal_spacing=60):
+
+            # Left column: file pickers
+            with dpg.group():
+                dpg.add_text("Input files", color=(200, 220, 200))
+                dpg.add_spacer(height=6)
+
+                btn_bed = dpg.add_button(
+                    label="Choose PLINK BED",
+                    callback=lambda: dpg.show_item("file_dialog_bed"),
+                    width=220,
+                )
+                app._secondary_buttons.append(btn_bed)
+                dpg.add_text("", tag="ld_bed_path_lbl", wrap=520)
+
+                dpg.add_spacer(height=6)
+                btn_vcf = dpg.add_button(
+                    label="Choose VCF (optional)",
+                    callback=lambda: dpg.show_item("file_dialog_vcf"),
+                    width=220,
+                )
+                app._secondary_buttons.append(btn_vcf)
+                dpg.add_text("", tag="ld_vcf_path_lbl", wrap=520)
+
+                dpg.add_spacer(height=6)
+                app.ld_region = dpg.add_input_text(
+                    label="Region (optional)",
+                    hint="chr:start-end (e.g., 1:1000000-2000000)",
+                    width=320,
+                )
+                app._inputs.append(app.ld_region)
+
+            # Right column: options
+            with dpg.group():
+                dpg.add_text("Options", color=(200, 220, 200))
+                dpg.add_spacer(height=6)
+
+                app.ld_window_kb = dpg.add_input_int(
+                    label="LD window (kb)",
+                    default_value=500,
+                    min_value=1,
+                    min_clamped=True,
+                    width=220,
+                )
+                app._inputs.append(app.ld_window_kb)
+
+                app.ld_window_snp = dpg.add_input_int(
+                    label="LD window size (SNPs)",
+                    default_value=5000,
+                    min_value=10,
+                    min_clamped=True,
+                    width=220,
+                )
+                app._inputs.append(app.ld_window_snp)
+
+                app.ld_max_kb = dpg.add_input_int(
+                    label="Max distance (kb)",
+                    default_value=1000,
+                    min_value=1,
+                    min_clamped=True,
+                    width=220,
+                )
+                app._inputs.append(app.ld_max_kb)
+
+                app.ld_min_r2 = dpg.add_input_float(
+                    label="Min r²",
+                    default_value=0.1,
+                    min_value=0.0,
+                    max_value=1.0,
+                    min_clamped=True,
+                    max_clamped=True,
+                    step=0.05,
+                    width=220,
+                )
+                app._inputs.append(app.ld_min_r2)
+
+                dpg.add_spacer(height=6)
+                app.ld_do_decay = dpg.add_checkbox(label="Compute LD decay", default_value=True)
+                app._inputs.append(app.ld_do_decay)
+
+                app.ld_do_heatmap = dpg.add_checkbox(label="LD heatmap", default_value=True)
+                app._inputs.append(app.ld_do_heatmap)
+
+                app.ld_do_div = dpg.add_checkbox(label="Diversity metrics", default_value=True)
+                app._inputs.append(app.ld_do_div)
+
+                dpg.add_spacer(height=12)
+                run_btn = dpg.add_button(
+                    label="Run LD analysis",
+                    callback=app.run_ld_analysis,
+                    width=240,
+                    height=38,
+                )
+                app._primary_buttons.append(run_btn)
+
+    return "page_ld"
+
 
 
 def page_gwas(app, parent):
@@ -450,6 +865,7 @@ def page_genomic_prediction(app, parent):
                 app._primary_buttons.append(gp_btn)
     return "page_gp"
 
+
 def page_batch_gwas(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_batch"):
         dpg.add_text("\nBatch GWAS for all traits in a phenotype file (FID IID + multiple traits).", indent=10)
@@ -510,7 +926,6 @@ def page_batch_gwas(app, parent):
                 app._primary_buttons.append(run_btn)
 
     return "page_batch"
-
 
 
 def page_settings(app, parent):
@@ -671,13 +1086,29 @@ def page_settings(app, parent):
 
 def build_pages(app, parent):
     pages = {}
-    pages["pre_sam"] = page_preprocess_samtools(app, parent)
-    pages["vc"] = page_variant_calling(app, parent)
-    pages["pre_bcf"] = page_preprocess_bcftools(app, parent)
-    pages["check_vcf"] = page_check_vcf(app, parent)
-    pages["plink"] = page_convert_plink(app, parent)
-    pages["gwas"] = page_gwas(app, parent)
-    pages["gp"] = page_genomic_prediction(app, parent)
-    pages["batch"] = page_batch_gwas(app, parent)
-    pages["settings"] = page_settings(app, parent)
+
+    def _mount(key, builder_fn):
+        container = f"view_{key}"
+        if dpg.does_item_exist(container):
+            dpg.delete_item(container)
+        with dpg.child_window(tag=container, parent=parent, show=False, border=False):
+            inner = builder_fn(app, container)
+            if isinstance(inner, str) and dpg.does_item_exist(inner):
+                dpg.configure_item(inner, show=True)
+        pages[key] = container
+
+    _mount("ref_manager", page_reference_manager)
+    _mount("fastq_qc", page_fastq_qc)
+    _mount("alignment", page_alignment)
+    _mount("pre_sam", page_preprocess_samtools)
+    _mount("vc", page_variant_calling)
+    _mount("pre_bcf", page_preprocess_bcftools)
+    _mount("check_vcf", page_check_vcf)
+    _mount("plink", page_convert_plink)
+    _mount("ld", page_ld_analysis)
+    _mount("gwas", page_gwas)
+    _mount("gp", page_genomic_prediction)
+    _mount("batch", page_batch_gwas)
+    _mount("settings", page_settings)
+
     return pages
