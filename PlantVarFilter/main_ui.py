@@ -131,7 +131,7 @@ class GWASApp:
         self.bcf_rmflt = None
         self.bcf_filter_expr = None
         self.bcf_out_prefix = None
-
+        self.kinship_app_data = None
         self.deep_scan = None
 
         self.gwas_combo = None
@@ -162,6 +162,7 @@ class GWASApp:
             ("plink", "Convert to PLINK"),
             ("ld", "LD Analysis"),
             ("gwas", "GWAS Analysis"),
+            ("pca", "PCA / Kinship"),
             ("gp", "Genomic Prediction"),
             ("batch", "Batch GWAS"),
             ("settings", "Settings"),
@@ -342,6 +343,7 @@ class GWASApp:
             "file_dialog_fasta": self.callback_fasta,
             "file_dialog_bam": self.callback_bam,
             "file_dialog_bam_vc": self.callback_bam_vc,
+            "file_dialog_kinship": self.callback_kinship,
             "file_dialog_bamlist": self.callback_bamlist_vc,
             "select_directory": self.callback_save_results,
         }
@@ -480,6 +482,15 @@ class GWASApp:
                 (".*", (200, 200, 200, 255)),
             ]
         )
+        _new_dialog(
+            tag="file_dialog_kinship",
+            file_count=1,
+            exts=[
+                ("Kinship (*.npy *.csv *.tsv *.txt){.npy,.csv,.tsv,.txt}", (180, 220, 255, 255)),
+                (".*", (200, 200, 200, 255)),
+            ],
+        )
+
         _new_dialog(
             tag="file_dialog_bam_vc",
             file_count=1,
@@ -653,6 +664,183 @@ class GWASApp:
                 dpg.add_text(f"Summary: {results['summary_csv']}", parent=self._results_body)
 
         self.add_log("[LD] Done.")
+
+    def compute_kinship_from_bed(self, s=None, a=None):
+        import os
+        import numpy as np
+        import pandas as pd
+        from pysnptools.snpreader import Bed
+
+        bed_path = self._get_appdata_path_safe(self.bed_app_data)
+        if not bed_path or not os.path.exists(bed_path):
+            self.add_log("Please select a valid BED file first.", error=True)
+            return
+
+        try:
+            self._set_workspace_dir(os.path.dirname(bed_path))
+            bim_path = bed_path.replace(".bed", ".bim")
+            chrom_mapping = self.helper.replace_with_integers(bim_path)
+
+            self.add_log("[KIN] Loading genotype matrix...")
+            bed = Bed(str(bed_path), count_A1=False, chrom_map=chrom_mapping)
+            X = bed.read().val.astype(float)  # shape: samples x snps
+            iid = bed.iid  # array of [FID, IID]
+
+            self.add_log("[KIN] Computing allele frequencies...")
+            # X is coded 0/1/2, NaN for missing
+            p = np.nanmean(X, axis=0) / 2.0  # allele freq per SNP
+            valid = np.isfinite(p) & (p > 0.0) & (p < 1.0)
+            if not np.any(valid):
+                self.add_log("[KIN] No informative SNPs for kinship (all monomorphic/missing).", error=True)
+                return
+
+            Xv = X[:, valid]
+            pv = p[valid]
+            # Mean-impute missing using 2p, then standardize
+            self.add_log("[KIN] Standardizing genotypes...")
+            # center
+            Xv_centered = Xv.copy()
+            nan_mask = ~np.isfinite(Xv_centered)
+            if np.any(nan_mask):
+                Xv_centered[nan_mask] = np.take(2.0 * pv, np.where(nan_mask)[1])
+            Xv_centered -= (2.0 * pv)
+
+            denom = np.sqrt(2.0 * pv * (1.0 - pv))
+            # avoid division by zero (already filtered)
+            Z = Xv_centered / denom
+
+            self.add_log("[KIN] Building GRM...")
+            M = Z.shape[1]
+            G = (Z @ Z.T) / float(M)  # samples x samples
+
+            # Labels
+            sample_ids = [f"{fid}_{iid_}" for fid, iid_ in iid.tolist()]
+            df_grm = pd.DataFrame(G, index=sample_ids, columns=sample_ids)
+
+            base = os.path.splitext(os.path.basename(bed_path))[0]
+            out_csv = os.path.join(self._workspace_dir, f"{base}_kinship.csv")
+            df_grm.to_csv(out_csv, index=True)
+
+            # Keep a reference in the app state
+            self.kinship_path_last = out_csv
+            try:
+                if hasattr(self, "_set_virtual_selection"):
+                    self._set_virtual_selection('kinship_app_data', out_csv)
+            except Exception:
+                pass
+
+            if dpg.does_item_exist("gwas_kinship_path_lbl"):
+                dpg.set_value("gwas_kinship_path_lbl", os.path.basename(out_csv))
+
+            self.add_log(f"[KIN] Kinship matrix saved: {out_csv}")
+        except Exception as e:
+            self.add_log(f"[KIN] Failed to compute kinship: {e}", error=True)
+
+    def run_pca_module(self, s=None, a=None):
+        bed_path = self._get_appdata_path_safe(self.bed_app_data)
+        if not bed_path or not os.path.exists(bed_path):
+            self.add_log("[PCA] Please select a PLINK .bed file first.", error=True)
+            return
+
+        self._set_workspace_dir(os.path.dirname(bed_path))
+
+        if bed_path.lower().endswith(".bed"):
+            bfile_prefix = bed_path[:-4]
+        else:
+            bfile_prefix = os.path.splitext(bed_path)[0]
+
+        try:
+            npcs = int(dpg.get_value(self.pca_npcs)) if (self.pca_npcs and dpg.does_item_exist(self.pca_npcs)) else 10
+        except Exception:
+            npcs = 10
+
+        do_kin = bool(dpg.get_value(self.pca_kinship)) if (
+                    self.pca_kinship and dpg.does_item_exist(self.pca_kinship)) else True
+
+        outpfx = ""
+        if self.pca_out_prefix and dpg.does_item_exist(self.pca_out_prefix):
+            outpfx = (dpg.get_value(self.pca_out_prefix) or "").strip()
+        if not outpfx:
+            base = os.path.basename(bfile_prefix)
+            outpfx = os.path.join(self._workspace_dir, f"{base}.pca")
+
+        plink2 = resolve_tool("plink2")
+        plink19 = resolve_tool("plink")
+        use_plink2 = (shutil.which(plink2) is not None) if plink2 else False
+        use_plink19 = (shutil.which(plink19) is not None) if plink19 else False
+        if not use_plink2 and not use_plink19:
+            self.add_log("[PCA] Neither plink2 nor plink (1.9) is available on PATH.", error=True)
+            return
+
+        try:
+            if use_plink2:
+                cmd = [plink2, "--bfile", bfile_prefix, "--pca", str(npcs), "var-wts", "approx", "--out", outpfx]
+            else:
+                cmd = [plink19, "--bfile", bfile_prefix, "--pca", str(npcs), "--out", outpfx]
+            self._run_cmd(cmd)
+
+            eigvec = f"{outpfx}.eigenvec"
+            eigval = f"{outpfx}.eigenval"
+            if not (os.path.exists(eigvec) and os.path.exists(eigval)):
+                self.add_log("[PCA] PCA output files not found (.eigenvec/.eigenval).", error=True)
+                return
+
+            kin_out = None
+            if do_kin:
+                if use_plink19:
+                    kin_out = outpfx + ".rel"
+                    cmd = [plink19, "--bfile", bfile_prefix, "--make-rel", "square", "--out", outpfx]
+                    self._run_cmd(cmd)
+                    if not os.path.exists(kin_out):
+                        if use_plink2:
+                            cmd = [plink2, "--bfile", bfile_prefix, "--make-rel", "square", "--out", outpfx]
+                            self._run_cmd(cmd)
+                            if not os.path.exists(kin_out) and os.path.exists(kin_out + ".gz"):
+                                kin_out = kin_out + ".gz"
+                        else:
+                            kin_out = None
+                else:
+                    kin_out = outpfx + ".rel"
+                    cmd = [plink2, "--bfile", bfile_prefix, "--make-rel", "square", "--out", outpfx]
+                    self._run_cmd(cmd)
+                    if not os.path.exists(kin_out) and os.path.exists(kin_out + ".gz"):
+                        kin_out = kin_out + ".gz"
+
+            self.ensure_results_window(show=True, title="PCA / Kinship Results")
+            dpg.delete_item(self._results_body, children_only=True)
+
+            dpg.add_text(f"Output prefix: {outpfx}", parent=self._results_body)
+            dpg.add_spacer(height=4, parent=self._results_body)
+            dpg.add_text(f"PCA files: {os.path.basename(eigvec)}, {os.path.basename(eigval)}",
+                         parent=self._results_body)
+            if kin_out:
+                dpg.add_text(f"Kinship file: {os.path.basename(kin_out)}", parent=self._results_body)
+
+            try:
+                xs, ys = [], []
+                with open(eigvec, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) >= 4:
+                            xs.append(float(parts[2]))
+                            ys.append(float(parts[3]))
+                if xs and ys:
+                    dpg.add_spacer(height=10, parent=self._results_body)
+                    dpg.add_text("PC1 vs PC2", parent=self._results_body)
+                    with dpg.plot(height=420, width=720, parent=self._results_body):
+                        x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="PC1")
+                        y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="PC2")
+                        dpg.add_scatter_series(xs, ys, label="samples", parent=y_axis)
+            except Exception as ex:
+                self.add_log(f"[PCA] Could not render PC1/PC2 scatter: {ex}", warn=True)
+
+            dpg.add_spacer(height=10, parent=self._results_body)
+            dpg.add_button(label="Export Results", parent=self._results_body,
+                           callback=lambda: dpg.show_item("select_directory"))
+
+            self.add_log("[PCA] Done.")
+        except Exception as e:
+            self.add_log(f"[PCA] Failed: {e}", error=True)
 
     def _bind_nav_button_theme(self, btn, active: bool):
         try:
@@ -1026,6 +1214,15 @@ class GWASApp:
                 dpg.set_value(self.vc_out_prefix, os.path.join(self._workspace_dir, f"{base}.raw"))
         except Exception:
             self.add_log('Invalid BAM-list file', error=True)
+
+    def callback_kinship(self, s, app_data):
+        self.kinship_app_data = app_data
+        kin_path, _ = self.get_selection_path(self.kinship_app_data)
+        if not kin_path:
+            return
+        self._set_workspace_dir(os.path.dirname(kin_path))
+        self.add_log("Kinship file selected: " + kin_path)
+        self._set_text("gwas_kinship_path_lbl", self._fmt_name(kin_path))
 
     def callback_save_results(self, s, app_data):
         sel_path, cur_dir = self.get_selection_path(app_data)
@@ -1604,20 +1801,54 @@ class GWASApp:
     def run_gwas(self, s, data, user_data):
         self.delete_files()
 
-        train_size_set = (100 - dpg.get_value(self.train_size_set)) / 100
-        estimators = dpg.get_value(self.estim_set)
-        model_nr = dpg.get_value(self.model_nr)
-        snp_limit = dpg.get_value(self.snp_limit)
-        nr_jobs = int(dpg.get_value(self.nr_jobs)) or -1
-        gb_goal = int(dpg.get_value(self.gb_goal))
-        max_dep_set = dpg.get_value(self.max_dep_set)
-        self.algorithm = dpg.get_value(self.gwas_combo)
-        aggregation_method = str(dpg.get_value(self.aggregation_method))
+        try:
+            train_size_set = (100 - dpg.get_value(self.train_size_set)) / 100
+        except Exception:
+            train_size_set = 0.7
+        try:
+            estimators = dpg.get_value(self.estim_set)
+        except Exception:
+            estimators = 200
+        try:
+            model_nr = dpg.get_value(self.model_nr)
+        except Exception:
+            model_nr = 1
+        try:
+            snp_limit = dpg.get_value(self.snp_limit)
+        except Exception:
+            snp_limit = None
+        try:
+            nr_jobs = int(dpg.get_value(self.nr_jobs)) or -1
+        except Exception:
+            nr_jobs = -1
+        try:
+            gb_goal = int(dpg.get_value(self.gb_goal))
+        except Exception:
+            gb_goal = 0
+        try:
+            max_dep_set = dpg.get_value(self.max_dep_set)
+        except Exception:
+            max_dep_set = 3
+        try:
+            self.algorithm = dpg.get_value(self.gwas_combo)
+        except Exception:
+            self.algorithm = "FaST-LMM"
+        try:
+            aggregation_method = str(dpg.get_value(self.aggregation_method))
+        except Exception:
+            aggregation_method = "sum"
 
         try:
             self.add_log('Reading files...')
             bed_path = self.get_selection_path(self.bed_app_data)[0]
             pheno_path = self.get_selection_path(self.pheno_app_data)[0]
+
+            kin_path = None
+            try:
+                kin_path = self._get_appdata_path_safe(getattr(self, "kinship_app_data", None))
+            except Exception:
+                kin_path = None
+
             if not bed_path or not pheno_path:
                 self.add_log('Please select a phenotype and genotype file.', error=True)
                 return
@@ -1651,8 +1882,16 @@ class GWASApp:
 
                 if self.algorithm in ('FaST-LMM', 'Linear regression'):
                     gwas_df, df_plot = self.gwas.run_gwas_lmm(
-                        bed_fixed, pheno, chrom_mapping, self.add_log,
-                        self.gwas_result_name, self.algorithm, bed_path, cov, gb_goal
+                        bed_fixed=bed_fixed,
+                        pheno=pheno,
+                        chrom_mapping=chrom_mapping,
+                        log_fn=self.add_log,
+                        out_csv=self.gwas_result_name,
+                        algorithm=self.algorithm,
+                        bed_path=bed_path,
+                        cov=cov,
+                        gb_goal=gb_goal,
+                        kinship_path=kin_path
                     )
                 elif self.algorithm == 'Random Forest (AI)':
                     gwas_df, df_plot = self.gwas.run_gwas_rf(
@@ -1672,6 +1911,8 @@ class GWASApp:
                         self.gwas_result_name, chrom_mapping, self.add_log,
                         model_nr, aggregation_method
                     )
+                else:
+                    gwas_df, df_plot = None, None
             else:
                 self.add_log(check_input_data[1], error=True)
                 return
@@ -1679,12 +1920,22 @@ class GWASApp:
             if gwas_df is not None:
                 self.add_log('GWAS Analysis done.')
                 self.add_log('GWAS Results Plotting...')
-                if dpg.get_value(self.plot_stats):
+                try:
+                    do_stats = bool(dpg.get_value(self.plot_stats))
+                except Exception:
+                    do_stats = False
+                if do_stats:
                     self.plot_class.plot_pheno_statistics(pheno_path, self.pheno_stats_name)
                     self.plot_class.plot_geno_statistics(bed_fixed, pheno, self.geno_stats_name)
 
-                self.gwas.plot_gwas(df_plot, snp_limit, self.algorithm,
-                                    self.manhatten_plot_name, self.qq_plot_name, chrom_mapping)
+                self.gwas.plot_gwas(
+                    df_plot,
+                    snp_limit if (str(snp_limit).strip().isdigit() and int(snp_limit) > 0) else None,
+                    self.algorithm,
+                    self.manhatten_plot_name,
+                    self.qq_plot_name,
+                    chrom_mapping
+                )
 
                 self._build_top_snps_file()
 
@@ -1699,6 +1950,8 @@ class GWASApp:
 
         except TypeError:
             self.add_log('Please select a phenotype and genotype file.', error=True)
+        except Exception as e:
+            self.add_log(f'Unexpected error in GWAS: {e}', error=True)
 
     def run_genomic_prediction(self, s, data, user_data):
         self.delete_files()
