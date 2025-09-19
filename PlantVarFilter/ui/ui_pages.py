@@ -756,6 +756,7 @@ def page_gwas(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_gwas"):
         dpg.add_text("\nStart GWAS Analysis", indent=10)
         dpg.add_spacer(height=10)
+
         with dpg.group(horizontal=True, horizontal_spacing=60):
             with dpg.group():
                 geno = dpg.add_button(
@@ -787,6 +788,24 @@ def page_gwas(app, parent):
                 app._secondary_buttons.append(cov_file)
                 dpg.add_text("", tag="gwas_cov_path_lbl", wrap=500)
 
+                dpg.add_spacer(height=6)
+                kin_file = dpg.add_button(
+                    label="Choose kinship file (optional)",
+                    callback=lambda: dpg.show_item("file_dialog_kinship"),
+                    width=220,
+                    tag="tooltip_kinship",
+                )
+                app._secondary_buttons.append(kin_file)
+                dpg.add_text("", tag="gwas_kinship_path_lbl", wrap=500)
+
+                dpg.add_spacer(height=6)
+                kin_compute = dpg.add_button(
+                    label="Compute kinship from BED",
+                    callback=lambda: app.compute_kinship_from_bed(),
+                    width=220,
+                )
+                app._secondary_buttons.append(kin_compute)
+
             with dpg.group():
                 app.gwas_combo = dpg.add_combo(
                     label="Analysis Algorithms",
@@ -796,22 +815,97 @@ def page_gwas(app, parent):
                         "Ridge Regression",
                         "Random Forest (AI)",
                         "XGBoost (AI)",
+                        "GLM (PLINK2)",
+                        "SAIGE (mixed model)",
                     ],
-                    width=240,
+                    width=260,
                     default_value="FaST-LMM",
                     tag="tooltip_algorithm",
                 )
                 app._inputs.append(app.gwas_combo)
 
+                dpg.add_spacer(height=8)
+                app.snp_limit = dpg.add_input_int(
+                    label="Limit SNPs in plots (optional)",
+                    width=260,
+                    min_value=0,
+                    step=1000,
+                    default_value=0,
+                )
+                app._inputs.append(app.snp_limit)
+
+                dpg.add_spacer(height=6)
+                app.plot_stats = dpg.add_checkbox(
+                    label="Produce pheno/geno statistics (PDF)",
+                    default_value=False,
+                )
+
                 dpg.add_spacer(height=14)
                 gwas_btn = dpg.add_button(
                     label="Run GWAS",
                     callback=lambda s, a: app.run_gwas(s, a, [geno, pheno]),
-                    width=180,
+                    width=200,
                     height=36,
                 )
                 app._primary_buttons.append(gwas_btn)
+
+        dpg.add_spacer(height=12)
+        dpg.add_separator()
+        dpg.add_spacer(height=8)
+        dpg.add_text(
+            "Results will appear in the Results window (tables, Manhattan/QQ plots).",
+            wrap=900,
+        )
+
     return "page_gwas"
+
+def page_pca(app, parent):
+    with dpg.group(parent=parent, show=False, tag="page_pca"):
+        dpg.add_text("Population Structure (PCA) & Kinship", indent=10)
+        dpg.add_spacer(height=10)
+
+        with dpg.group(horizontal=True, horizontal_spacing=60):
+            # Left: inputs
+            with dpg.group():
+                btn_bed = dpg.add_button(
+                    label="Choose PLINK BED",
+                    callback=lambda: dpg.show_item("file_dialog_bed"),
+                    width=220,
+                    tag="tooltip_bed_pca"
+                )
+                app._secondary_buttons.append(btn_bed)
+                dpg.add_text("", tag="pca_bed_path_lbl", wrap=500)
+
+                dpg.add_spacer(height=8)
+                app.pca_out_prefix = dpg.add_input_text(
+                    label="Output prefix (optional)",
+                    hint="Default: next to BED prefix",
+                    width=320
+                )
+                app._inputs.append(app.pca_out_prefix)
+
+            # Right: options
+            with dpg.group():
+                app.pca_npcs = dpg.add_input_int(label="Number of PCs", default_value=10, min_value=2, max_value=50, width=160)
+                app._inputs.append(app.pca_npcs)
+
+                app.pca_kinship = dpg.add_checkbox(label="Compute kinship matrix", default_value=True)
+                app._inputs.append(app.pca_kinship)
+
+                dpg.add_spacer(height=12)
+                run_btn = dpg.add_button(
+                    label="Run PCA",
+                    callback=app.run_pca_module,
+                    width=200, height=36
+                )
+                app._primary_buttons.append(run_btn)
+
+        dpg.add_spacer(height=12)
+        dpg.add_separator()
+        dpg.add_spacer(height=6)
+        dpg.add_text("Results preview will appear in the Results window (PC1 vs PC2 plot, files list).")
+
+    return "page_pca"
 
 
 def page_genomic_prediction(app, parent):
@@ -1107,6 +1201,7 @@ def build_pages(app, parent):
     _mount("plink", page_convert_plink)
     _mount("ld", page_ld_analysis)
     _mount("gwas", page_gwas)
+    _mount("pca", page_pca)
     _mount("gp", page_genomic_prediction)
     _mount("batch", page_batch_gwas)
     _mount("settings", page_settings)
