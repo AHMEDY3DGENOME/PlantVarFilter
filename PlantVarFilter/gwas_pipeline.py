@@ -20,7 +20,8 @@ from sklearn.linear_model import Ridge
 from fastlmm.association import single_snp, single_snp_linreg
 from pysnptools.util import log_in_place
 import geneview as gv
-
+import gzip
+from bisect import bisect_left
 from PlantVarFilter.helpers import HELPERS
 
 plt.switch_backend('Agg')
@@ -696,19 +697,118 @@ class GWAS:
     # ---------------------------
     # Plotting
     # ---------------------------
-    def plot_gwas(self, df, limit, algorithm, manhatten_plot_name, qq_plot_name, chrom_mapping):
-        if algorithm in ('FaST-LMM', 'Linear regression'):
-            if limit != '':
-                df = df.head(int(limit))
-            df = df.dropna(subset=['ChrPos'])
+    def plot_gwas(
+            self,
+            df,
+            limit,
+            algorithm,
+            manhatten_plot_name,
+            qq_plot_name,
+            chrom_mapping,
+            region: str = None,
+            region_only_csv: str = None,
+            title_suffix: str = None,
+    ):
+        import math
+        import re
 
-            sugg_line = 1 / len(df['SNP'])
-            gen_line = 0.05 / len(df['SNP'])
+        def _parse_region(s: str):
+            if not s or not str(s).strip():
+                return None, None, None
+            s = str(s).strip()
+            s = s.replace(" ", "")
+            m = re.match(r"^(chr)?([A-Za-z0-9]+)(?::([0-9eE\+\-]+)-([0-9eE\+\-]+))?$", s)
+            if not m:
+                return None, None, None
+            chrom_token = m.group(2)
+            try:
+                start = int(float(m.group(3))) if m.group(3) else None
+                end = int(float(m.group(4))) if m.group(4) else None
+            except Exception:
+                start, end = None, None
+            if start is not None and end is not None and end < start:
+                start, end = end, start
+            return chrom_token, start, end
 
-            df = df.sort_values(by=['Chr', 'ChrPos'])
-            df = df[df['PValue'] != 0.0]
-            df['Chr'] = df['Chr'].astype(int)
-            df['ChrPos'] = df['ChrPos'].astype(int)
+        def _apply_region_filter(df_in, region_str):
+            if not region_str:
+                return df_in.copy(), None
+            chrom_token, start, end = _parse_region(region_str)
+            if chrom_token is None:
+                return df_in.copy(), None
+
+            df_loc = df_in.copy()
+            if "Chr" not in df_loc.columns or "ChrPos" not in df_loc.columns:
+                return df_in.copy(), None
+
+            valid_ints = set()
+            try:
+                as_int = int(chrom_token)
+                valid_ints.add(as_int)
+            except Exception:
+                pass
+            for key, mapped in (chrom_mapping or {}).items():
+                kt = key.lower().replace("chr", "")
+                if kt == chrom_token.lower().replace("chr", ""):
+                    try:
+                        valid_ints.add(int(mapped))
+                    except Exception:
+                        pass
+
+            if valid_ints:
+                mask = df_loc["Chr"].astype(int).isin(valid_ints)
+            else:
+                mask = pd.Series([True] * len(df_loc), index=df_loc.index)
+
+            if start is not None:
+                mask &= (df_loc["ChrPos"].astype(int) >= int(start))
+            if end is not None:
+                mask &= (df_loc["ChrPos"].astype(int) <= int(end))
+
+            df_f = df_loc.loc[mask].copy()
+            desc = f"{chrom_token}"
+            if start is not None and end is not None:
+                desc += f":{start}-{end}"
+            return df_f, desc
+
+        df_work = df.copy()
+        if limit not in ("", None):
+            try:
+                lim = int(limit)
+                if lim > 0:
+                    df_work = df_work.head(lim)
+            except Exception:
+                pass
+        if "ChrPos" in df_work.columns:
+            df_work = df_work.dropna(subset=["ChrPos"])
+
+        region_desc = None
+        if region:
+            df_work, region_desc = _apply_region_filter(df_work, region)
+
+        if region and region_only_csv is None:
+            base = os.path.splitext(manhatten_plot_name)[0]
+            suffix = region_desc.replace(":", "_").replace("-", "_") if region_desc else "region"
+            region_only_csv = f"{base}.{suffix}.csv"
+
+        try:
+            if region_only_csv and len(df_work) > 0:
+                out_df = df_work.copy()
+                flipped = {v: k for k, v in (chrom_mapping or {}).items()}
+                try:
+                    out_df["Chr"] = out_df["Chr"].astype(float).replace(flipped)
+                except Exception:
+                    pass
+                out_df.to_csv(region_only_csv, index=False)
+        except Exception:
+            pass
+
+        if algorithm in ("FaST-LMM", "Linear regression"):
+            if "PValue" in df_work.columns:
+                df_work = df_work[df_work["PValue"] != 0.0]
+            df_work = df_work.sort_values(by=["Chr", "ChrPos"])
+            df_work["Chr"] = df_work["Chr"].astype(int)
+            df_work["ChrPos"] = df_work["ChrPos"].astype(int)
 
             plt_params = {
                 "font.sans-serif": "Arial",
@@ -716,37 +816,78 @@ class GWAS:
                 "axes.titlesize": 18,
                 "axes.labelsize": 16,
                 "xtick.labelsize": 14,
-                "ytick.labelsize": 14
+                "ytick.labelsize": 14,
             }
             plt.rcParams.update(plt_params)
 
+            sugg_line = 1.0 / max(1, len(df_work.get("SNP", [])))
+            gen_line = 0.05 / max(1, len(df_work.get("SNP", [])))
+
             f, ax = plt.subplots(figsize=(12, 5), facecolor="w", edgecolor="k")
-            flipped_dict = {value: key for key, value in chrom_mapping.items()}
-            df['Chr'] = df['Chr'].astype(float).replace(flipped_dict)
+            flipped_dict = {value: key for key, value in (chrom_mapping or {}).items()}
+            try:
+                df_plot = df_work.copy()
+                df_plot["Chr"] = df_plot["Chr"].astype(float).replace(flipped_dict)
+            except Exception:
+                df_plot = df_work
+
+            plot_title = f"Manhattan Plot ({algorithm})"
+            if title_suffix:
+                plot_title += f" — {title_suffix}"
+            if region_desc:
+                plot_title += f" [{region_desc}]"
 
             _ = gv.manhattanplot(
-                data=df, chrom='Chr', pos="ChrPos", pv="PValue", snp="SNP", marker=".",
-                color=['#4297d8', '#eec03c', '#423496', '#495227', '#d50b6f', '#e76519', '#d580b7', '#84d3ac'],
-                sign_marker_color="r", title=f"Manhattan Plot ({algorithm})",
-                xlabel="Chromosome", ylabel=r"$-log_{10}{(P)}$",
+                data=df_plot,
+                chrom="Chr",
+                pos="ChrPos",
+                pv="PValue",
+                snp="SNP",
+                marker=".",
+                color=["#4297d8", "#eec03c", "#423496", "#495227", "#d50b6f", "#e76519", "#d580b7", "#84d3ac"],
+                sign_marker_color="r",
+                title=plot_title,
+                xlabel="Chromosome",
+                ylabel=r"$-log_{10}{(P)}$",
                 sign_line_cols=["#D62728", "#2CA02C"],
                 hline_kws={"linestyle": "--", "lw": 1.3},
                 text_kws={"fontsize": 12, "arrowprops": dict(arrowstyle="-", color="k", alpha=0.6)},
-                logp=True, ax=ax, xticklabel_kws={"rotation": "vertical"},
-                suggestiveline=sugg_line, genomewideline=gen_line
+                logp=True,
+                ax=ax,
+                xticklabel_kws={"rotation": "vertical"},
+                suggestiveline=sugg_line,
+                genomewideline=gen_line,
             )
             plt.tight_layout(pad=1)
-            plt.savefig(manhatten_plot_name)
-            plt.savefig(manhatten_plot_name.replace('manhatten_plot', 'manhatten_plot_high'), dpi=300)
+            manh_out = manhatten_plot_name if not region_desc else manhatten_plot_name.replace(
+                ".png", f".{region_desc.replace(':', '_').replace('-', '_')}.png"
+            )
+            plt.savefig(manh_out)
+            plt.savefig(manh_out.replace("manhatten_plot", "manhatten_plot_high"), dpi=300)
 
-            f, ax = plt.subplots(figsize=(6, 6), facecolor="w", edgecolor="k")
-            _ = gv.qqplot(
-                data=df["PValue"], marker="o", title=f"QQ Plot ({algorithm})",
-                xlabel=r"Expected $-log_{10}{(P)}$", ylabel=r"Observed $-log_{10}{(P)}$", ax=ax
-            )
-            plt.tight_layout(pad=1)
-            plt.savefig(qq_plot_name)
-            plt.savefig(qq_plot_name.replace('qq_plot', 'qq_plot_high'), dpi=300)
+            if "PValue" in df_work.columns and len(df_work) > 0:
+                f, ax = plt.subplots(figsize=(6, 6), facecolor="w", edgecolor="k")
+                qq_title = f"QQ Plot ({algorithm})"
+                if title_suffix:
+                    qq_title += f" — {title_suffix}"
+                if region_desc:
+                    qq_title += f" [{region_desc}]"
+                _ = gv.qqplot(
+                    data=df_work["PValue"],
+                    marker="o",
+                    title=qq_title,
+                    xlabel=r"Expected $-log_{10}{(P)}$",
+                    ylabel=r"Observed $-log_{10}{(P)}$",
+                    ax=ax,
+                )
+                plt.tight_layout(pad=1)
+                qq_out = qq_plot_name if not region_desc else qq_plot_name.replace(
+                    ".png", f".{region_desc.replace(':', '_').replace('-', '_')}.png"
+                )
+                plt.savefig(qq_out)
+                plt.savefig(qq_out.replace("qq_plot", "qq_plot_high"), dpi=300)
+            else:
+                qq_out = None
 
         else:
             plt_params = {
@@ -755,28 +896,213 @@ class GWAS:
                 "axes.titlesize": 14,
                 "axes.labelsize": 12,
                 "xtick.labelsize": 10,
-                "ytick.labelsize": 10
+                "ytick.labelsize": 10,
             }
             plt.rcParams.update(plt_params)
 
-            df = df.sort_values(by=['Chr', 'ChrPos'])
-            df['Chr'] = df['Chr'].astype(int)
-            df['ChrPos'] = df['ChrPos'].astype(int)
+            df_work = df_work.sort_values(by=["Chr", "ChrPos"])
+            df_work["Chr"] = df_work["Chr"].astype(int)
+            df_work["ChrPos"] = df_work["ChrPos"].astype(int)
 
-            flipped_dict = {value: key for key, value in chrom_mapping.items()}
-            df['Chr'] = df['Chr'].astype(float).replace(flipped_dict)
+            flipped_dict = {value: key for key, value in (chrom_mapping or {}).items()}
+            try:
+                df_plot = df_work.copy()
+                df_plot["Chr"] = df_plot["Chr"].astype(float).replace(flipped_dict)
+            except Exception:
+                df_plot = df_work
 
             f, ax = plt.subplots(figsize=(12, 6), facecolor="w", edgecolor="k")
-            algorithm2 = algorithm.replace(' (AI)', '')
+            algorithm2 = algorithm.replace(" (AI)", "")
+            plot_title = f"Manhattan Plot ({algorithm2})"
+            if title_suffix:
+                plot_title += f" — {title_suffix}"
+            if region_desc:
+                plot_title += f" [{region_desc}]"
+
             _ = gv.manhattanplot(
-                data=df, chrom='Chr', pos="ChrPos", pv="PValue", snp="SNP", logp=False,
-                title=f"Manhatten Plot ({algorithm2})",
-                color=['#4297d8', '#eec03c', '#423496', '#495227', '#d50b6f', '#e76519', '#d580b7', '#84d3ac'],
-                xlabel="Chromosome", ylabel=r"SNP effect", xticklabel_kws={"rotation": "vertical"}
+                data=df_plot,
+                chrom="Chr",
+                pos="ChrPos",
+                pv="PValue",
+                snp="SNP",
+                logp=False,
+                title=plot_title,
+                color=["#4297d8", "#eec03c", "#423496", "#495227", "#d50b6f", "#e76519", "#d580b7", "#84d3ac"],
+                xlabel="Chromosome",
+                ylabel=r"SNP effect",
+                xticklabel_kws={"rotation": "vertical"},
             )
             plt.tight_layout(pad=1)
-            plt.savefig(manhatten_plot_name)
-            plt.savefig(manhatten_plot_name.replace('manhatten_plot', 'manhatten_plot_high'), dpi=300)
+            manh_out = manhatten_plot_name if not region_desc else manhatten_plot_name.replace(
+                ".png", f".{region_desc.replace(':', '_').replace('-', '_')}.png"
+            )
+            plt.savefig(manh_out)
+            plt.savefig(manh_out.replace("manhatten_plot", "manhatten_plot_high"), dpi=300)
+            qq_out = None
+
+        return {
+            "manhattan_png": manh_out,
+            "qq_png": qq_out,
+            "region_csv": region_only_csv if (region and len(df_work) > 0) else None,
+            "filtered_count": int(len(df_work)),
+            "region_desc": region_desc,
+        }
+
+    #------------------------------
+     #Annotations
+    #------------------------------
+    def _smart_open(self, path):
+        return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path, "r")
+
+    def _parse_gtf_attributes(self, attr_str: str):
+        out = {}
+        # Handles GTF/GFF attribute styles
+        for part in attr_str.strip().split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            if "=" in part:  # GFF style
+                k, v = part.split("=", 1)
+            else:  # GTF style key "value"
+                seg = part.split(" ", 1)
+                if len(seg) == 1:
+                    k, v = seg[0], ""
+                else:
+                    k, v = seg[0], seg[1].strip()
+            v = v.strip().strip('"').strip("'")
+            out[k] = v
+        return out
+
+    def build_gtf_index(self, gtf_path: str, log_fn=None):
+        """
+        Build a minimal index of TSS positions from a GTF/GFF:
+          returns: dict {chrom: [(tss_pos, gene_id, gene_name, feature_type), ...]} sorted by tss_pos
+        """
+        if log_fn: log_fn(f"[ANNOT] Building GTF/GFF index: {gtf_path}")
+        idx = {}
+        n_lines = 0
+        with self._smart_open(gtf_path) as fh:
+            for ln in fh:
+                if not ln or ln.startswith("#"):
+                    continue
+                n_lines += 1
+                parts = ln.rstrip("\n").split("\t")
+                if len(parts) < 9:
+                    continue
+                chrom, source, feature, start, end, score, strand, frame, attrs = parts
+                if feature not in ("gene", "transcript", "mRNA"):
+                    # We only need a representative TSS anchor; genes/transcripts are fine.
+                    continue
+                try:
+                    start_i = int(start)
+                    end_i = int(end)
+                except Exception:
+                    continue
+                tss = start_i if strand == "+" else end_i
+                a = self._parse_gtf_attributes(attrs)
+                gene_id = a.get("gene_id") or a.get("ID") or ""
+                gene_name = a.get("gene_name") or a.get("Name") or gene_id
+                if not gene_id and not gene_name:
+                    continue
+                lst = idx.setdefault(chrom, [])
+                lst.append((tss, gene_id, gene_name, feature))
+        # sort
+        for chrom in list(idx.keys()):
+            idx[chrom].sort(key=lambda x: x[0])
+        if log_fn:
+            tot = sum(len(v) for v in idx.values())
+            log_fn(f"[ANNOT] Indexed {tot:,} TSS anchors across {len(idx)} chromosomes.")
+        return idx
+
+    def _nearest_within_kb(self, sorted_list, pos, window_bp):
+        """
+        Given sorted_list = [(tss, gene_id, gene_name, feat), ...] (sorted by tss),
+        return nearest entry and distance if within window_bp. Else (None, None).
+        """
+        if not sorted_list:
+            return None, None
+        tss_only = [t[0] for t in sorted_list]
+        i = bisect_left(tss_only, pos)
+        cand = []
+        if i < len(sorted_list):
+            cand.append(sorted_list[i])
+        if i > 0:
+            cand.append(sorted_list[i - 1])
+        best = None
+        best_dist = None
+        for t in cand:
+            d = abs(t[0] - pos)
+            if best is None or d < best_dist:
+                best = t
+                best_dist = d
+        if best is not None and best_dist <= window_bp:
+            return best, best_dist
+        return None, None
+
+    def annotate_gwas_results(self, gwas_csv: str, gtf_path: str, out_csv: str,
+                              window_kb: int = 50, log_fn=None):
+        """
+        Annotate GWAS table (expects columns: Chr, ChrPos, SNP or similar)
+        with nearest gene within +/- window_kb around TSS.
+        """
+        if log_fn: log_fn(f"[ANNOT] Loading GWAS table: {gwas_csv}")
+        df = pd.read_csv(gwas_csv)
+        # Normalize expected columns
+        if "Chr" not in df.columns or "ChrPos" not in df.columns:
+            # Try alternative spellings
+            if "Chr" not in df.columns:
+                raise ValueError("GWAS table must contain 'Chr' column")
+            if "ChrPos" not in df.columns:
+                if "BP" in df.columns:
+                    df["ChrPos"] = df["BP"]
+                elif "Position" in df.columns:
+                    df["ChrPos"] = df["Position"]
+                else:
+                    raise ValueError("GWAS table must contain 'ChrPos' (or BP/Position)")
+
+        # Read index
+        idx = self.build_gtf_index(gtf_path, log_fn=log_fn)
+        window_bp = int(window_kb) * 1000
+
+        ann_gene = []
+        ann_feat = []
+        ann_dist = []
+        ann_hit = []
+
+        if log_fn: log_fn(f"[ANNOT] Annotating with ±{window_kb} kb around TSS")
+        for _, r in df.iterrows():
+            chrom = str(r["Chr"])
+            try:
+                pos = int(r["ChrPos"])
+            except Exception:
+                pos = None
+            if pos is None or chrom not in idx:
+                ann_gene.append("")
+                ann_feat.append("")
+                ann_dist.append(np.nan)
+                ann_hit.append(False)
+                continue
+            best, dist = self._nearest_within_kb(idx[chrom], pos, window_bp)
+            if best is None:
+                ann_gene.append("")
+                ann_feat.append("")
+                ann_dist.append(np.nan)
+                ann_hit.append(False)
+            else:
+                tss, gid, gname, feat = best
+                ann_gene.append(gname if gname else gid)
+                ann_feat.append(feat)
+                ann_dist.append(int(dist))
+                ann_hit.append(True)
+
+        df["NearestGene"] = ann_gene
+        df["NearestFeature"] = ann_feat
+        df["DistanceToTSS"] = ann_dist
+        df["WithinWindow"] = ann_hit
+
+        df.to_csv(out_csv, index=False)
+        if log_fn: log_fn(f"[ANNOT] Saved: {out_csv}")
+        return out_csv
 
     # ---------------------------
     # Helpers (SAIGE)

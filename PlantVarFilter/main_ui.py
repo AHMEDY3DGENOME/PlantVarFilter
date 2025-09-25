@@ -21,7 +21,7 @@ from bcftools_utils import BCFtools, BCFtoolsError
 from samtools_utils import Samtools, SamtoolsError
 from PlantVarFilter.batch_gwas import run_batch_gwas_for_all_traits
 from ui.ui_pages import build_pages
-
+from annotation_utils import Annotator
 
 try:
     from variant_caller_utils import VariantCaller, VariantCallerError
@@ -93,6 +93,7 @@ class GWASApp:
         self.bcf_out_last = None
         self.sam_out_last = None
         self.vc_out_last = None
+        self.gtf_app_data = None
 
         self._workspace_dir = os.getcwd()
         self.gwas_result_name = "gwas_results.csv"
@@ -345,6 +346,7 @@ class GWASApp:
             "file_dialog_bam_vc": self.callback_bam_vc,
             "file_dialog_kinship": self.callback_kinship,
             "file_dialog_bamlist": self.callback_bamlist_vc,
+            "file_dialog_gtf": self.callback_gtf,
             "select_directory": self.callback_save_results,
         }
         for tag, fn in cb_map.items():
@@ -507,6 +509,16 @@ class GWASApp:
                 (".*", (200, 200, 200, 255)),
             ]
         )
+        _new_dialog(
+            tag="file_dialog_gtf",
+            file_count=1,
+            exts=[
+                ("Annotation (*.gtf *.gff *.gff3 *.gtf.gz *.gff.gz){.gtf,.gff,.gff3,.gtf.gz,.gff.gz}",
+                 (180, 255, 180, 255)),
+                (".*", (200, 200, 200, 255)),
+            ]
+        )
+
         with dpg.file_dialog(
                 directory_selector=True,
                 show=False,
@@ -1133,6 +1145,20 @@ class GWASApp:
                 self._set_text(tag, name)
         except TypeError:
             self.add_log('Wrong Pheno File Selected', error=True)
+    def callback_gtf(self, s, app_data):
+        self.gtf_app_data = app_data
+        try:
+            gtf_path, current_path = self.get_selection_path(self.gtf_app_data)
+            if not gtf_path:
+                return
+            self._set_workspace_dir(os.path.dirname(gtf_path))
+            self.add_log('Annotation (GTF/GFF) Selected:' + gtf_path)
+            if dpg.does_item_exist("gwas_gtf_path_lbl"):
+                self._set_text("gwas_gtf_path_lbl", self._fmt_name(gtf_path))
+        except Exception:
+            self.add_log('Invalid GTF/GFF annotation file', error=True)
+
+
 
     def callback_cov(self, s, app_data):
         self.cov_app_data = app_data
@@ -1801,6 +1827,7 @@ class GWASApp:
     def run_gwas(self, s, data, user_data):
         self.delete_files()
 
+        # Safe parameter extraction with fallbacks
         try:
             train_size_set = (100 - dpg.get_value(self.train_size_set)) / 100
         except Exception:
@@ -1839,7 +1866,7 @@ class GWASApp:
             aggregation_method = "sum"
 
         try:
-            self.add_log('Reading files...')
+            self.add_log("Reading files...")
             bed_path = self.get_selection_path(self.bed_app_data)[0]
             pheno_path = self.get_selection_path(self.pheno_app_data)[0]
 
@@ -1850,7 +1877,7 @@ class GWASApp:
                 kin_path = None
 
             if not bed_path or not pheno_path:
-                self.add_log('Please select a phenotype and genotype file.', error=True)
+                self.add_log("Please select a phenotype and genotype file.", error=True)
                 return
 
             self._set_workspace_dir(os.path.dirname(bed_path))
@@ -1861,97 +1888,202 @@ class GWASApp:
             except Exception:
                 pass
 
-            self.add_log('Validating files...')
+            self.add_log("Validating files...")
             check_input_data = self.gwas.validate_gwas_input_files(bed_path, pheno_path)
 
-            chrom_mapping = self.helper.replace_with_integers(bed_path.replace('.bed', '.bim'))
-            self.settings_lst = [self.algorithm, bed_path, pheno_path, train_size_set, estimators, model_nr,
-                                 max_dep_set]
+            chrom_mapping = self.helper.replace_with_integers(bed_path.replace(".bed", ".bim"))
+            self.settings_lst = [
+                self.algorithm,
+                bed_path,
+                pheno_path,
+                train_size_set,
+                estimators,
+                model_nr,
+                max_dep_set,
+            ]
 
-            if check_input_data[0]:
-                bed = Bed(str(bed_path), count_A1=False, chrom_map=chrom_mapping)
-                pheno = Pheno(str(pheno_path))
-                cov = Pheno(str(cov_path)) if cov_path else None
-
-                bed, pheno = pstutil.intersect_apply([bed, pheno])
-                bed_fixed = self.gwas.filter_out_missing(bed)
-
-                self.add_log(f"Dataset after intersection: SNPs: {bed.sid_count}  Pheno IDs: {pheno.iid_count}",
-                             warn=True)
-                self.add_log('Starting Analysis, this might take a while...')
-
-                if self.algorithm in ('FaST-LMM', 'Linear regression'):
-                    gwas_df, df_plot = self.gwas.run_gwas_lmm(
-                        bed_fixed=bed_fixed,
-                        pheno=pheno,
-                        chrom_mapping=chrom_mapping,
-                        log_fn=self.add_log,
-                        out_csv=self.gwas_result_name,
-                        algorithm=self.algorithm,
-                        bed_path=bed_path,
-                        cov=cov,
-                        gb_goal=gb_goal,
-                        kinship_path=kin_path
-                    )
-                elif self.algorithm == 'Random Forest (AI)':
-                    gwas_df, df_plot = self.gwas.run_gwas_rf(
-                        bed_fixed, pheno, bed_path, train_size_set, estimators,
-                        self.gwas_result_name, chrom_mapping, self.add_log,
-                        model_nr, nr_jobs, aggregation_method
-                    )
-                elif self.algorithm == 'XGBoost (AI)':
-                    gwas_df, df_plot = self.gwas.run_gwas_xg(
-                        bed_fixed, pheno, bed_path, train_size_set, estimators,
-                        self.gwas_result_name, chrom_mapping, self.add_log,
-                        model_nr, max_dep_set, nr_jobs, aggregation_method
-                    )
-                elif self.algorithm == 'Ridge Regression':
-                    gwas_df, df_plot = self.gwas.run_gwas_ridge(
-                        bed_fixed, pheno, bed_path, train_size_set, 1.0,
-                        self.gwas_result_name, chrom_mapping, self.add_log,
-                        model_nr, aggregation_method
-                    )
-                else:
-                    gwas_df, df_plot = None, None
-            else:
+            if not check_input_data[0]:
                 self.add_log(check_input_data[1], error=True)
                 return
 
-            if gwas_df is not None:
-                self.add_log('GWAS Analysis done.')
-                self.add_log('GWAS Results Plotting...')
-                try:
-                    do_stats = bool(dpg.get_value(self.plot_stats))
-                except Exception:
-                    do_stats = False
-                if do_stats:
-                    self.plot_class.plot_pheno_statistics(pheno_path, self.pheno_stats_name)
-                    self.plot_class.plot_geno_statistics(bed_fixed, pheno, self.geno_stats_name)
+            bed = Bed(str(bed_path), count_A1=False, chrom_map=chrom_mapping)
+            pheno = Pheno(str(pheno_path))
+            cov = Pheno(str(cov_path)) if cov_path else None
 
-                self.gwas.plot_gwas(
-                    df_plot,
-                    snp_limit if (str(snp_limit).strip().isdigit() and int(snp_limit) > 0) else None,
-                    self.algorithm,
-                    self.manhatten_plot_name,
-                    self.qq_plot_name,
-                    chrom_mapping
+            bed, pheno = pstutil.intersect_apply([bed, pheno])
+            bed_fixed = self.gwas.filter_out_missing(bed)
+
+            # Optional region filter (Chr / Start / End) if provided from UI
+            try:
+                import pandas as pd
+                import numpy as np
+                region_chr = dpg.get_value(self.region_chr).strip() if dpg.does_item_exist(self.region_chr) else ""
+                region_start = int(dpg.get_value(self.region_start)) if dpg.does_item_exist(self.region_start) else 0
+                region_end = int(dpg.get_value(self.region_end)) if dpg.does_item_exist(self.region_end) else 0
+                if region_chr and region_end > region_start >= 0:
+                    bim_path = bed_path.replace(".bed", ".bim")
+                    df_bim = pd.read_csv(bim_path, sep=r"\s+", header=None, engine="python")
+                    df_bim.columns = ["Chr", "SNP", "NA1", "ChrPos", "NA2", "NA3"]
+                    chr_vals = df_bim["Chr"].astype(str)
+                    mask_chr = (chr_vals == str(region_chr)) | (chr_vals == str(
+                        self.helper.replace_with_integers_value(region_chr) if hasattr(self.helper,
+                                                                                       "replace_with_integers_value") else region_chr))
+                    mask_pos = (df_bim["ChrPos"].astype(int) >= region_start) & (
+                                df_bim["ChrPos"].astype(int) <= region_end)
+                    df_sub = df_bim[mask_chr & mask_pos]
+                    if not df_sub.empty:
+                        snp_keep = set(df_sub["SNP"].astype(str).tolist())
+                        snp_mask = np.array([sid in snp_keep for sid in bed.sid])
+                        if snp_mask.any():
+                            prev = bed_fixed.sid_count
+                            bed_fixed = bed_fixed[:, snp_mask]
+                            self.add_log(
+                                f"[Region] Filter applied: {region_chr}:{region_start}-{region_end} → {bed_fixed.sid_count}/{prev} SNPs kept")
+                        else:
+                            self.add_log(
+                                f"[Region] No SNPs matched {region_chr}:{region_start}-{region_end}. Proceeding without region filter.",
+                                warn=True)
+                    else:
+                        self.add_log(
+                            f"[Region] No BIM records matched {region_chr}:{region_start}-{region_end}. Proceeding without region filter.",
+                            warn=True)
+            except Exception as ex_region:
+                self.add_log(f"[Region] Failed to apply region filter: {ex_region}", warn=True)
+
+            self.add_log(
+                f"Dataset after intersection: SNPs: {bed_fixed.sid_count}  Pheno IDs: {pheno.iid_count}",
+                warn=True,
+            )
+            self.add_log("Starting Analysis, this might take a while...")
+
+            if self.algorithm in ("FaST-LMM", "Linear regression"):
+                gwas_df, df_plot = self.gwas.run_gwas_lmm(
+                    bed_fixed=bed_fixed,
+                    pheno=pheno,
+                    chrom_mapping=chrom_mapping,
+                    log_fn=self.add_log,
+                    out_csv=self.gwas_result_name,
+                    algorithm=self.algorithm,
+                    bed_path=bed_path,
+                    cov=cov,
+                    gb_goal=gb_goal,
+                    kinship_path=kin_path,
                 )
-
-                self._build_top_snps_file()
-
-                self.add_log('Done...')
-                self.show_results_window(gwas_df, self.algorithm, genomic_predict=False)
-
-                self.bed_app_data = None
-                self.pheno_app_data = None
-                self.cov_app_data = None
+            elif self.algorithm == "Random Forest (AI)":
+                gwas_df, df_plot = self.gwas.run_gwas_rf(
+                    bed_fixed,
+                    pheno,
+                    bed_path,
+                    train_size_set,
+                    estimators,
+                    self.gwas_result_name,
+                    chrom_mapping,
+                    self.add_log,
+                    model_nr,
+                    nr_jobs,
+                    aggregation_method,
+                )
+            elif self.algorithm == "XGBoost (AI)":
+                gwas_df, df_plot = self.gwas.run_gwas_xg(
+                    bed_fixed,
+                    pheno,
+                    bed_path,
+                    train_size_set,
+                    estimators,
+                    self.gwas_result_name,
+                    chrom_mapping,
+                    self.add_log,
+                    model_nr,
+                    max_dep_set,
+                    nr_jobs,
+                    aggregation_method,
+                )
+            elif self.algorithm == "Ridge Regression":
+                gwas_df, df_plot = self.gwas.run_gwas_ridge(
+                    bed_fixed,
+                    pheno,
+                    bed_path,
+                    train_size_set,
+                    1.0,
+                    self.gwas_result_name,
+                    chrom_mapping,
+                    self.add_log,
+                    model_nr,
+                    aggregation_method,
+                )
             else:
-                self.add_log('Error, GWAS Analysis could not be started.', error=True)
+                gwas_df, df_plot = None, None
+
+            if gwas_df is None:
+                self.add_log("Error, GWAS Analysis could not be started.", error=True)
+                return
+
+            self.add_log("GWAS Analysis done.")
+            self.add_log("GWAS Results Plotting...")
+
+            try:
+                do_stats = bool(dpg.get_value(self.plot_stats))
+            except Exception:
+                do_stats = False
+            if do_stats:
+                self.plot_class.plot_pheno_statistics(pheno_path, self.pheno_stats_name)
+                self.plot_class.plot_geno_statistics(bed_fixed, pheno, self.geno_stats_name)
+
+            self.gwas.plot_gwas(
+                df_plot,
+                snp_limit if (str(snp_limit).strip().isdigit() and int(snp_limit) > 0) else None,
+                self.algorithm,
+                self.manhatten_plot_name,
+                self.qq_plot_name,
+                chrom_mapping,
+            )
+
+            self._build_top_snps_file()
+
+            # Annotation block
+            try:
+                annotate_on = bool(dpg.get_value(self.annotate_enable)) if dpg.does_item_exist(
+                    self.annotate_enable) else False
+                window_kb = int(dpg.get_value(self.annotate_window_kb)) if dpg.does_item_exist(
+                    self.annotate_window_kb) else 50
+            except Exception:
+                annotate_on, window_kb = False, 50
+
+            if annotate_on:
+                gtf_path = None
+                try:
+                    gtf_path = self._get_appdata_path_safe(getattr(self, "gtf_app_data", None))
+                except Exception:
+                    gtf_path = None
+
+                if gtf_path and os.path.exists(self.gwas_result_name):
+                    try:
+                        from annotation_utils import Annotator
+                        ann = Annotator()
+                        ann.load_gtf_or_gff(gtf_path)
+                        ann.build_index()
+                        annotated_csv = ann.annotate_and_save(
+                            gwas_df,
+                            out_csv=self.gwas_result_name,
+                            window_kb=window_kb,
+                            chr_col="Chr",
+                            pos_col="ChrPos",
+                        )
+                        self.add_log(f"[ANNOT] GWAS annotated → {annotated_csv}")
+                    except Exception as e:
+                        self.add_log(f"[ANNOT] Annotation failed: {e}", warn=True)
+
+            self.add_log("Done...")
+            self.show_results_window(gwas_df, self.algorithm, genomic_predict=False)
+
+            self.bed_app_data = None
+            self.pheno_app_data = None
+            self.cov_app_data = None
 
         except TypeError:
-            self.add_log('Please select a phenotype and genotype file.', error=True)
+            self.add_log("Please select a phenotype and genotype file.", error=True)
         except Exception as e:
-            self.add_log(f'Unexpected error in GWAS: {e}', error=True)
+            self.add_log(f"Unexpected error in GWAS: {e}", error=True)
 
     def run_genomic_prediction(self, s, data, user_data):
         self.delete_files()

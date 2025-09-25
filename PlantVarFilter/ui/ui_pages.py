@@ -806,6 +806,15 @@ def page_gwas(app, parent):
                 )
                 app._secondary_buttons.append(kin_compute)
 
+                dpg.add_spacer(height=8)
+                anno_btn = dpg.add_button(
+                    label="Choose GTF/GFF annotation",
+                    callback=lambda: dpg.show_item("file_dialog_gtf"),
+                    width=220,
+                )
+                app._secondary_buttons.append(anno_btn)
+                dpg.add_text("", tag="gwas_gtf_path_lbl", wrap=500)
+
             with dpg.group():
                 app.gwas_combo = dpg.add_combo(
                     label="Analysis Algorithms",
@@ -816,7 +825,7 @@ def page_gwas(app, parent):
                         "Random Forest (AI)",
                         "XGBoost (AI)",
                         "GLM (PLINK2)",
-                        "SAIGE (mixed model)",
+                        "SAIGE (mixed model)"
                     ],
                     width=260,
                     default_value="FaST-LMM",
@@ -830,14 +839,49 @@ def page_gwas(app, parent):
                     width=260,
                     min_value=0,
                     step=1000,
-                    default_value=0,
+                    default_value=0
                 )
                 app._inputs.append(app.snp_limit)
 
                 dpg.add_spacer(height=6)
                 app.plot_stats = dpg.add_checkbox(
                     label="Produce pheno/geno statistics (PDF)",
-                    default_value=False,
+                    default_value=False
+                )
+
+                dpg.add_spacer(height=6)
+                app.annotate_enable = dpg.add_checkbox(
+                    label="Annotate GWAS with GTF/GFF",
+                    default_value=False
+                )
+                app.annotate_window_kb = dpg.add_input_int(
+                    label="Window around TSS (kb)",
+                    width=260,
+                    min_value=0,
+                    step=10,
+                    default_value=50
+                )
+
+                dpg.add_spacer(height=10)
+                dpg.add_text("Optional Region Filter", color=(150, 150, 255))
+                app.region_chr = dpg.add_input_text(
+                    label="Chromosome",
+                    width=260,
+                    default_value=""
+                )
+                app.region_start = dpg.add_input_int(
+                    label="Start position",
+                    width=260,
+                    min_value=0,
+                    step=1000,
+                    default_value=0
+                )
+                app.region_end = dpg.add_input_int(
+                    label="End position",
+                    width=260,
+                    min_value=0,
+                    step=1000,
+                    default_value=0
                 )
 
                 dpg.add_spacer(height=14)
@@ -854,7 +898,7 @@ def page_gwas(app, parent):
         dpg.add_spacer(height=8)
         dpg.add_text(
             "Results will appear in the Results window (tables, Manhattan/QQ plots).",
-            wrap=900,
+            wrap=900
         )
 
     return "page_gwas"
