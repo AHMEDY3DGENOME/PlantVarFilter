@@ -1,6 +1,11 @@
 # variant_caller_utils.py
-import os, shutil, subprocess, tempfile
-from typing import List, Optional, Tuple, Callable, Union
+import os
+import shutil
+import subprocess
+import tempfile
+from typing import List, Optional, Tuple, Callable, Union, Dict
+
+from .bcftools_utils import BCFtools
 
 try:
     from PlantVarFilter.linux import resolve_tool
@@ -9,8 +14,10 @@ except Exception:
 
 LogFn = Callable[[str], None]
 
+
 class VariantCallerError(RuntimeError):
     pass
+
 
 def _resolve_exe(name: str) -> str:
     if resolve_tool is not None:
@@ -20,16 +27,22 @@ def _resolve_exe(name: str) -> str:
     p = shutil.which(name)
     if p:
         return p
-    raise VariantCallerError(f"Executable not found: {name}. Bundle it under PlantVarFilter/linux or add to PATH.")
+    raise VariantCallerError(
+        f"Executable not found: {name}. Bundle it under PlantVarFilter/linux or add to PATH."
+    )
+
 
 class VariantCaller:
-    def __init__(self,
-                 bcftools_bin: Optional[str] = None,
-                 bgzip_bin: Optional[str] = None,
-                 tabix_bin: Optional[str] = None):
+    def __init__(
+        self,
+        bcftools_bin: Optional[str] = None,
+        bgzip_bin: Optional[str] = None,
+        tabix_bin: Optional[str] = None,
+    ):
         self.bcftools = bcftools_bin or _resolve_exe("bcftools")
-        self.bgzip    = bgzip_bin    or _resolve_exe("bgzip")
-        self.tabix    = tabix_bin    or _resolve_exe("tabix")
+        self.bgzip = bgzip_bin or _resolve_exe("bgzip")
+        self.tabix = tabix_bin or _resolve_exe("tabix")
+        self.last_split: Optional[Dict[str, str]] = None
 
     def _run(self, cmd: List[str], log: LogFn):
         log(" ".join(cmd))
@@ -42,22 +55,28 @@ class VariantCaller:
             for ln in out.strip().splitlines():
                 log(ln)
 
-    def call_bcftools(self,
-                      bams: Union[List[str], str],
-                      ref_fasta: str,
-                      out_prefix: Optional[str] = None,
-                      regions_bed: Optional[str] = None,
-                      threads: int = 8,
-                      min_baseq: int = 13,
-                      min_mapq: int = 20,
-                      ploidy: int = 2,
-                      log: LogFn = print) -> Tuple[str, str]:
+    def get_last_split(self) -> Optional[Dict[str, str]]:
+        return self.last_split
+
+    def call_bcftools(
+        self,
+        bams: Union[List[str], str],
+        ref_fasta: str,
+        out_prefix: Optional[str] = None,
+        regions_bed: Optional[str] = None,
+        threads: int = 8,
+        min_baseq: int = 13,
+        min_mapq: int = 20,
+        ploidy: int = 2,
+        log: LogFn = print,
+        split_after_calling: bool = False,
+    ) -> Tuple[str, str]:
         """
-         (vcf_gz, tbi)
+        Returns (vcf_gz, tbi_path).
+        If split_after_calling is True, SNP/INDEL paths are available via self.get_last_split().
         """
         if not os.path.exists(ref_fasta):
             raise VariantCallerError(f"Reference FASTA not found: {ref_fasta}")
-
 
         workdir = os.getcwd()
         if isinstance(bams, list) and len(bams) > 0:
@@ -91,15 +110,21 @@ class VariantCaller:
             single_bam = None
 
         try:
-            # bcftools mpileup
             mp_cmd = [
-                self.bcftools, "mpileup",
+                self.bcftools,
+                "mpileup",
                 "-Ou",
-                "-f", ref_fasta,
-                "-q", str(min_mapq),
-                "-Q", str(min_baseq),
-                "-a", "FORMAT/AD,FORMAT/DP"
+                "-f",
+                ref_fasta,
+                "-q",
+                str(min_mapq),
+                "-Q",
+                str(min_baseq),
+                "-a",
+                "FORMAT/AD,FORMAT/DP",
             ]
+            if threads and threads > 1:
+                mp_cmd += ["--threads", str(threads)]
             if regions_bed and os.path.exists(regions_bed):
                 mp_cmd += ["-R", regions_bed]
             if bam_list_path:
@@ -107,15 +132,19 @@ class VariantCaller:
             elif single_bam:
                 mp_cmd += [single_bam]
 
-            # bcftools call
             call_cmd = [
-                self.bcftools, "call",
+                self.bcftools,
+                "call",
                 "-mv",
-                "-ploidy", str(ploidy),
-                "-Oz", "-o", vcf_gz
+                "-ploidy",
+                str(ploidy),
+                "-Oz",
+                "-o",
+                vcf_gz,
             ]
+            if threads and threads > 1:
+                call_cmd = ["taskset", "-c", "0-{}".format(max(0, threads - 1))] + call_cmd  # optional CPU pinning
 
-            # Pipe: mpileup | call
             log(" | ".join([" ".join(mp_cmd), " ".join(call_cmd)]))
             p1 = subprocess.Popen(mp_cmd, stdout=subprocess.PIPE)
             p2 = subprocess.Popen(call_cmd, stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -126,8 +155,25 @@ class VariantCaller:
                 out_txt = (out or b"").decode("utf-8", errors="replace")
                 raise VariantCallerError(f"bcftools call failed:\n{out_txt}")
 
-            # index
             self._run([self.tabix, "-f", "-p", "vcf", vcf_gz], log)
+
+            self.last_split = None
+            if split_after_calling:
+                try:
+                    bcf = BCFtools()
+                    paths = bcf.split_vcf(
+                        input_vcf=vcf_gz,
+                        out_prefix=out_prefix,
+                        log=log,
+                        regions_bed=regions_bed,
+                    )
+                    self.last_split = paths
+                    if paths.get("snps"):
+                        log(f"SNPs VCF: {paths['snps']}")
+                    if paths.get("indels"):
+                        log(f"INDELs VCF: {paths['indels']}")
+                except Exception as e:
+                    log(f"WARN: split_vcf failed: {e}")
 
             return vcf_gz, vcf_gz + ".tbi"
         finally:

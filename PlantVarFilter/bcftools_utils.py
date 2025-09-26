@@ -4,7 +4,7 @@
 import os
 import shutil
 import subprocess
-from typing import Optional, Tuple, List, Callable
+from typing import Optional, Tuple, List, Callable, Dict
 
 from PlantVarFilter.linux import resolve_tool
 
@@ -65,6 +65,12 @@ class BCFtools:
             raise BCFtoolsError(f"Command failed ({res.returncode})")
         if res.stdout and res.stdout.strip():
             self._emit(log, res.stdout.strip())
+
+    def _index_vcf(self, path: str, log: LogFn):
+        if not os.path.exists(path):
+            raise BCFtoolsError(f"VCF not found to index: {path}")
+        cmd = [self.tabix, "-f", "-p", "vcf", path]
+        self._run(cmd, log)
 
     def preprocess(
         self,
@@ -150,7 +156,17 @@ class BCFtools:
 
         if fill_tags:
             out_tags = f"{out_prefix}.tags{_vcf_ext(True)}"
-            cmd = [self.bcftools, "+fill-tags", current, "-Oz", "-o", out_tags, "--", "-t", "AC,AN,AF,MAF,HWE"]
+            cmd = [
+                self.bcftools,
+                "+fill-tags",
+                current,
+                "-Oz",
+                "-o",
+                out_tags,
+                "--",
+                "-t",
+                "AC,AN,AF,MAF,HWE",
+            ]
             self._run(cmd, log)
             current = out_tags
             temps.append(out_tags)
@@ -197,8 +213,7 @@ class BCFtools:
 
         stats_path: Optional[str] = None
         if compress_output and index_output:
-            cmd = [self.tabix, "-f", "-p", "vcf", final_path]
-            self._run(cmd, log)
+            self._index_vcf(final_path, log)
 
             stats_path = f"{out_prefix}.stats.txt"
             cmd = [self.bcftools, "stats", "-s", "-", final_path]
@@ -224,3 +239,51 @@ class BCFtools:
         if stats_path and os.path.exists(stats_path):
             self._emit(log, f"Stats    : {stats_path}")
         return final_path, stats_path
+
+    def split_vcf(
+        self,
+        input_vcf: str,
+        out_prefix: Optional[str] = None,
+        log: LogFn = print,
+        regions_bed: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """
+        Split a VCF into SNPs and INDEL/other variant types.
+        Returns a dict with keys: {'snps': path, 'indels': path}
+        """
+        self.ensure_bins(log)
+        if not os.path.exists(input_vcf):
+            raise BCFtoolsError(f"Input VCF not found: {input_vcf}")
+
+        workdir = os.path.dirname(os.path.abspath(input_vcf))
+        base = os.path.basename(input_vcf)
+        if out_prefix is None or not out_prefix.strip():
+            stem = base
+            if stem.endswith(".vcf.gz"):
+                stem = stem[:-7]
+            elif stem.endswith(".vcf"):
+                stem = stem[:-4]
+            out_prefix = os.path.join(workdir, stem)
+
+        snps_out = f"{out_prefix}.snps.vcf.gz"
+        indels_out = f"{out_prefix}.indels.vcf.gz"
+
+        cmd_snps = [self.bcftools, "view", "-v", "snps"]
+        cmd_indels = [self.bcftools, "view", "-v", "indels,other"]
+
+        if regions_bed and os.path.exists(regions_bed):
+            cmd_snps += ["-R", regions_bed]
+            cmd_indels += ["-R", regions_bed]
+
+        cmd_snps += ["-Oz", "-o", snps_out, input_vcf]
+        cmd_indels += ["-Oz", "-o", indels_out, input_vcf]
+
+        self._run(cmd_snps, log)
+        self._index_vcf(snps_out, log)
+
+        self._run(cmd_indels, log)
+        self._index_vcf(indels_out, log)
+
+        self._emit(log, f"SNPs VCF   : {snps_out}")
+        self._emit(log, f"INDELs VCF : {indels_out}")
+        return {"snps": snps_out, "indels": indels_out}
