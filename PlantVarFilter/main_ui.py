@@ -89,7 +89,7 @@ class GWASApp:
         self.bam_app_data = None
         self.bam_vc_app_data = None
         self.bamlist_app_data = None
-
+        self._chrom_mapping_last = None
         self.bcf_out_last = None
         self.sam_out_last = None
         self.vc_out_last = None
@@ -1473,17 +1473,16 @@ class GWASApp:
         bam_single = self._get_appdata_path_safe(self.bam_vc_app_data)
         bam_spec = bamlist or bam_single
         if not bam_spec:
-            self.add_log('Please select a BAM (or BAM-list) and FASTA first.', error=True)
+            self.add_log("Please select a BAM (or BAM-list) and FASTA first.", error=True)
             return
 
         fasta_path = self._get_appdata_path_safe(self.fasta_app_data)
         if not fasta_path:
-            self.add_log('Please select a reference FASTA first.', error=True)
+            self.add_log("Please select a reference FASTA first.", error=True)
             return
 
         self._set_workspace_dir(os.path.dirname(bam_spec))
 
-        # Pre-flight checks: BAM index and FASTA index
         if os.path.isfile(bam_spec) and not os.path.exists(bam_spec + ".bai"):
             self.add_log("[VC] .bai not found; indexing BAM...")
             subprocess.run([resolve_tool("samtools"), "index", bam_spec], check=False, text=True, capture_output=True)
@@ -1499,34 +1498,68 @@ class GWASApp:
         min_mq = max(0, int(dpg.get_value(self.vc_min_mq)))
         outpfx = dpg.get_value(self.vc_out_prefix) or None
 
-        # Generate default output prefix if empty
         if not outpfx:
             base = os.path.basename(bam_spec)
             base = os.path.splitext(base)[0]
             outpfx = os.path.join(self._workspace_dir, f"{base}.raw")
             dpg.set_value(self.vc_out_prefix, outpfx)
 
+        split_after = bool(dpg.get_value("vc_split_after_calling")) if dpg.does_item_exist(
+            "vc_split_after_calling") else False
+
         self.add_log("Running variant calling...")
         try:
-            vcf_gz, tbi = self.vcaller.call_variants(
-                input_path=bam_spec,
-                reference_fasta=fasta_path,
+            vcf_gz, tbi = self.vcaller.call_bcftools(
+                bams=bam_spec if os.path.isfile(bam_spec) else bam_spec,
+                ref_fasta=fasta_path,
                 out_prefix=outpfx,
-                threads=threads,
                 regions_bed=regions_path,
+                threads=threads,
                 min_baseq=min_bq,
                 min_mapq=min_mq,
                 ploidy=ploidy,
                 log=self.add_log
             )
+
             self.vc_out_last = vcf_gz
-            self._set_virtual_selection('vcf_app_data', vcf_gz)
+            self._set_virtual_selection("vcf_app_data", vcf_gz)
             name = self._fmt_name(vcf_gz)
             for tag in ("bcf_vcf_path_lbl", "qc_vcf_path_lbl", "conv_vcf_path_lbl"):
                 self._set_text(tag, name)
             self.add_log(f"Variant calling: Done → {vcf_gz}")
             if tbi and os.path.exists(tbi):
                 self.add_log(f"Index: {tbi}")
+
+            if split_after:
+                try:
+                    from bcftools_utils import BCFtools
+                    bcf = BCFtools(
+                        bcftools_bin=resolve_tool("bcftools"),
+                        bgzip_bin=resolve_tool("bgzip"),
+                        tabix_bin=resolve_tool("tabix")
+                    )
+                    stem = vcf_gz[:-7] if vcf_gz.endswith(".vcf.gz") else vcf_gz[:-4] if vcf_gz.endswith(
+                        ".vcf") else vcf_gz
+                    snps_out = f"{stem}.snps.vcf.gz"
+                    indels_out = f"{stem}.indels.vcf.gz"
+
+                    cmd_snps = [bcf.bcftools, "view", "-v", "snps", vcf_gz, "-Oz", "-o", snps_out]
+                    self.add_log("$ " + " ".join(cmd_snps))
+                    subprocess.run(cmd_snps, check=False, text=True, capture_output=True)
+                    subprocess.run([bcf.tabix, "-f", "-p", "vcf", snps_out], check=False, text=True,
+                                   capture_output=True)
+
+                    cmd_indels = [bcf.bcftools, "view", "-V", "snps", vcf_gz, "-Oz", "-o", indels_out]
+                    self.add_log("$ " + " ".join(cmd_indels))
+                    subprocess.run(cmd_indels, check=False, text=True, capture_output=True)
+                    subprocess.run([bcf.tabix, "-f", "-p", "vcf", indels_out], check=False, text=True,
+                                   capture_output=True)
+
+                    self.add_log(f"[VC] SNPs VCF saved → {snps_out}")
+                    self.add_log(f"[VC] INDELs VCF saved → {indels_out}")
+                except Exception as ex_split:
+                    self.add_log(f"[VC] Split after calling failed: {ex_split}", warn=True)
+
         except VariantCallerError as e:
             self.add_log(f"variant calling error: {e}", error=True)
         except Exception as e:
@@ -1827,7 +1860,6 @@ class GWASApp:
     def run_gwas(self, s, data, user_data):
         self.delete_files()
 
-        # Safe parameter extraction with fallbacks
         try:
             train_size_set = (100 - dpg.get_value(self.train_size_set)) / 100
         except Exception:
@@ -1892,6 +1924,7 @@ class GWASApp:
             check_input_data = self.gwas.validate_gwas_input_files(bed_path, pheno_path)
 
             chrom_mapping = self.helper.replace_with_integers(bed_path.replace(".bed", ".bim"))
+            self._chrom_mapping_last = chrom_mapping
             self.settings_lst = [
                 self.algorithm,
                 bed_path,
@@ -1913,7 +1946,6 @@ class GWASApp:
             bed, pheno = pstutil.intersect_apply([bed, pheno])
             bed_fixed = self.gwas.filter_out_missing(bed)
 
-            # Optional region filter (Chr / Start / End) if provided from UI
             try:
                 import pandas as pd
                 import numpy as np
@@ -1926,10 +1958,10 @@ class GWASApp:
                     df_bim.columns = ["Chr", "SNP", "NA1", "ChrPos", "NA2", "NA3"]
                     chr_vals = df_bim["Chr"].astype(str)
                     mask_chr = (chr_vals == str(region_chr)) | (chr_vals == str(
-                        self.helper.replace_with_integers_value(region_chr) if hasattr(self.helper,
-                                                                                       "replace_with_integers_value") else region_chr))
+                        self.helper.replace_with_integers_value(region_chr) if hasattr(
+                            self.helper, "replace_with_integers_value") else region_chr))
                     mask_pos = (df_bim["ChrPos"].astype(int) >= region_start) & (
-                                df_bim["ChrPos"].astype(int) <= region_end)
+                            df_bim["ChrPos"].astype(int) <= region_end)
                     df_sub = df_bim[mask_chr & mask_pos]
                     if not df_sub.empty:
                         snp_keep = set(df_sub["SNP"].astype(str).tolist())
@@ -1938,7 +1970,8 @@ class GWASApp:
                             prev = bed_fixed.sid_count
                             bed_fixed = bed_fixed[:, snp_mask]
                             self.add_log(
-                                f"[Region] Filter applied: {region_chr}:{region_start}-{region_end} → {bed_fixed.sid_count}/{prev} SNPs kept")
+                                f"[Region] Filter applied: {region_chr}:{region_start}-{region_end} → {bed_fixed.sid_count}/{prev} SNPs kept"
+                            )
                         else:
                             self.add_log(
                                 f"[Region] No SNPs matched {region_chr}:{region_start}-{region_end}. Proceeding without region filter.",
@@ -2040,7 +2073,6 @@ class GWASApp:
 
             self._build_top_snps_file()
 
-            # Annotation block
             try:
                 annotate_on = bool(dpg.get_value(self.annotate_enable)) if dpg.does_item_exist(
                     self.annotate_enable) else False
@@ -2393,6 +2425,88 @@ class GWASApp:
                                     dpg.add_text(df.iloc[i, j])
 
                 self._add_top_snps_tab(parent_tabbar_tag=gwas_tabbar, top_n=100)
+
+                # QTL / Region tools tab
+                with dpg.tab(label="QTL / Region tools"):
+                    with dpg.group(horizontal=True, horizontal_spacing=8):
+                        dpg.add_input_text(tag="qtl_region_inp", label="Region (chr:start-end)", width=260,
+                                           hint="e.g., 1:100000-500000")
+                        dpg.add_button(label="Export region SNPs (CSV)", callback=self._qtl_export_region)
+                        dpg.add_button(label="Plot region Manhattan", callback=self._qtl_plot_region)
+                    dpg.add_spacer(height=6)
+                    dpg.add_text("", tag="qtl_region_csv_lbl")
+                    dpg.add_spacer(height=8)
+                    dpg.add_text("Region Manhattan:", color=(200, 200, 220))
+                    with dpg.child_window(tag="qtl_region_img_area", width=-1, height=460, border=True):
+                        pass
+
+    def _qtl_export_region(self, s=None, a=None):
+        try:
+            import pandas as pd
+            region = (dpg.get_value("qtl_region_inp") or "").strip()
+            if not region:
+                self.add_log("[QTL] Please enter a region like '1:100000-500000'.", warn=True)
+                return
+            if not os.path.exists(self.gwas_result_name):
+                self.add_log("[QTL] GWAS results CSV not found.", error=True)
+                return
+            df = pd.read_csv(self.gwas_result_name)
+            safe = region.replace(":", "_").replace("-", "_").replace(",", "")
+            out_csv = os.path.join(self._workspace_dir, f"gwas_region_{safe}.csv")
+
+            # Reuse plot_gwas to write region-only CSV without overwriting plots
+            self.gwas.plot_gwas(
+                df=df,
+                limit=None,
+                algorithm=getattr(self, "algorithm", "FaST-LMM"),
+                manhatten_plot_name=self.manhatten_plot_name,  # ignored here effectively
+                qq_plot_name=self.qq_plot_name,  # ignored here effectively
+                chrom_mapping=getattr(self, "_chrom_mapping_last", None),
+                region=region,
+                region_only_csv=out_csv,
+                title_suffix="Region export"
+            )
+            if dpg.does_item_exist("qtl_region_csv_lbl"):
+                dpg.set_value("qtl_region_csv_lbl", f"Saved: {os.path.basename(out_csv)}")
+            self.add_log(f"[QTL] Region CSV saved: {out_csv}")
+        except Exception as e:
+            self.add_log(f"[QTL] Export failed: {e}", error=True)
+
+    def _qtl_plot_region(self, s=None, a=None):
+        try:
+            import pandas as pd
+            region = (dpg.get_value("qtl_region_inp") or "").strip()
+            if not region:
+                self.add_log("[QTL] Please enter a region like '1:100000-500000'.", warn=True)
+                return
+            if not os.path.exists(self.gwas_result_name):
+                self.add_log("[QTL] GWAS results CSV not found.", error=True)
+                return
+            df = pd.read_csv(self.gwas_result_name)
+            out_png = os.path.join(self._workspace_dir, "manhattan_region.png")
+
+            self.gwas.plot_gwas(
+                df=df,
+                limit=None,
+                algorithm=getattr(self, "algorithm", "FaST-LMM"),
+                manhatten_plot_name=out_png,
+                qq_plot_name=self.qq_plot_name,
+                chrom_mapping=getattr(self, "_chrom_mapping_last", None),
+                region=region,
+                region_only_csv=None,
+                title_suffix="Region view"
+            )
+
+            wh = self._safe_load_image(out_png, "manhatten_region_tag")
+            if wh and dpg.does_item_exist("qtl_region_img_area"):
+                dpg.delete_item("qtl_region_img_area", children_only=True)
+                w, h = wh
+                width = min(1100, w)
+                dpg.add_image(texture_tag="manhatten_region_tag", parent="qtl_region_img_area",
+                              width=width, height=int(h * (width / w)))
+            self.add_log(f"[QTL] Region Manhattan saved: {out_png}")
+        except Exception as e:
+            self.add_log(f"[QTL] Plot failed: {e}", error=True)
 
     def toggle_theme(self, sender, app_data):
         self.night_mode = bool(app_data)

@@ -8,7 +8,6 @@ import subprocess
 
 import dearpygui.dearpygui as dpg
 
-# Optional preanalysis imports (Reference Manager, FASTQ QC, Alignment)
 try:
     from PlantVarFilter.preanalysis import (
         ReferenceManager, ReferenceIndexStatus,
@@ -16,7 +15,6 @@ try:
         Aligner, AlignmentResult,
     )
     _HAS_PRE = True
-    # ----- Platform display & mapping -----
     PLATFORM_DISPLAY = [
         "Illumina (short reads)",
         "Oxford Nanopore (ONT)",
@@ -36,8 +34,6 @@ try:
         "hifi": "map-hifi",
         "pb": "map-pb",
     }
-
-
 except Exception:
     _HAS_PRE = False
 
@@ -74,8 +70,6 @@ def _dir_input_row(label: str, tag_key: str, parent):
                          callback=lambda s, a: dpg.set_value(f"input_{tag_key}", a["file_path_name"])):
         pass
 
-
-# -------------------------- Preanalysis: Reference Manager -------------------
 
 def page_reference_manager(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_ref_manager"):
@@ -129,8 +123,6 @@ def _on_build_reference(app):
     _render_ref_status(st)
     app.add_log("[REF] Reference indexing finished.")
 
-
-# ------------------------------ Preanalysis: FASTQ QC ------------------------
 
 def page_fastq_qc(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_fastq_qc"):
@@ -200,8 +192,6 @@ def _on_run_fastq_qc(app):
     _render_qc(rep)
     app.add_log("[FQ-QC] Done.")
 
-
-# ------------------------------- Preanalysis: Alignment ----------------------
 
 def page_alignment(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_alignment"):
@@ -289,8 +279,6 @@ def _on_run_alignment(app):
                    callback=lambda: _open_in_os(str(Path(res.bam).parent)))
     app.add_log("[ALN] Alignment finished.")
 
-
-# ------------------------------ Existing Pages -------------------------------
 
 def page_preprocess_samtools(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_pre_sam"):
@@ -432,6 +420,14 @@ def page_variant_calling(app, parent):
                 )
                 app._inputs.append(app.vc_out_prefix)
 
+                dpg.add_spacer(height=6)
+                app.vc_split_after = dpg.add_checkbox(
+                    label="Split VCF by variant type (SNPs / INDELs)",
+                    default_value=False,
+                    tag="vc_split_after_calling",
+                )
+                app._inputs.append(app.vc_split_after)
+
                 dpg.add_spacer(height=12)
                 run_vc = dpg.add_button(
                     label="Call variants (bcftools)",
@@ -440,6 +436,7 @@ def page_variant_calling(app, parent):
                     height=38,
                 )
                 app._primary_buttons.append(run_vc)
+
     return "page_vc"
 
 
@@ -648,14 +645,13 @@ def page_convert_plink(app, parent):
                 app._primary_buttons.append(convert_btn)
     return "page_plink"
 
+
 def page_ld_analysis(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_ld"):
         dpg.add_text("\nLD analysis: LD decay, LD heatmap, and diversity metrics", indent=10)
         dpg.add_spacer(height=10)
 
         with dpg.group(horizontal=True, horizontal_spacing=60):
-
-            # Left column: file pickers
             with dpg.group():
                 dpg.add_text("Input files", color=(200, 220, 200))
                 dpg.add_spacer(height=6)
@@ -685,7 +681,6 @@ def page_ld_analysis(app, parent):
                 )
                 app._inputs.append(app.ld_region)
 
-            # Right column: options
             with dpg.group():
                 dpg.add_text("Options", color=(200, 220, 200))
                 dpg.add_spacer(height=6)
@@ -749,7 +744,6 @@ def page_ld_analysis(app, parent):
                 app._primary_buttons.append(run_btn)
 
     return "page_ld"
-
 
 
 def page_gwas(app, parent):
@@ -903,13 +897,13 @@ def page_gwas(app, parent):
 
     return "page_gwas"
 
+
 def page_pca(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_pca"):
         dpg.add_text("Population Structure (PCA) & Kinship", indent=10)
         dpg.add_spacer(height=10)
 
         with dpg.group(horizontal=True, horizontal_spacing=60):
-            # Left: inputs
             with dpg.group():
                 btn_bed = dpg.add_button(
                     label="Choose PLINK BED",
@@ -928,7 +922,6 @@ def page_pca(app, parent):
                 )
                 app._inputs.append(app.pca_out_prefix)
 
-            # Right: options
             with dpg.group():
                 app.pca_npcs = dpg.add_input_int(label="Number of PCs", default_value=10, min_value=2, max_value=50, width=160)
                 app._inputs.append(app.pca_npcs)
@@ -1190,6 +1183,71 @@ def page_settings(app, parent):
                         tag="tooltip_aggr",
                     )
                     app._inputs.append(app.aggregation_method)
+
+        dpg.add_spacer(height=18)
+        dpg.add_text("Large-file handling", color=(200, 180, 90))
+        dpg.add_spacer(height=8)
+
+        with dpg.group(horizontal=True, horizontal_spacing=60):
+            with dpg.group():
+                app.large_enable = dpg.add_checkbox(
+                    label="Enable Large-file mode",
+                    default_value=True,
+                    tag="large_enable",
+                )
+                app._inputs.append(app.large_enable)
+
+                dpg.add_spacer(height=6)
+                app.large_chunk_lines = dpg.add_input_int(
+                    label="Chunk size (VCF lines per part)",
+                    width=260,
+                    default_value=500_000,
+                    step=50_000,
+                    min_value=10_000,
+                    min_clamped=True,
+                    tag="large_chunk_lines",
+                )
+                app._inputs.append(app.large_chunk_lines)
+
+                dpg.add_spacer(height=6)
+                app.large_max_workers = dpg.add_input_int(
+                    label="Max workers",
+                    width=260,
+                    default_value=2,
+                    min_value=1,
+                    max_value=64,
+                    min_clamped=True,
+                    max_clamped=True,
+                    tag="large_max_workers",
+                )
+                app._inputs.append(app.large_max_workers)
+
+            with dpg.group():
+                app.large_merge_strategy = dpg.add_combo(
+                    items=["bcftools", "cat"],
+                    label="Merge strategy",
+                    width=260,
+                    default_value="bcftools",
+                    tag="large_merge_strategy",
+                )
+                app._inputs.append(app.large_merge_strategy)
+
+                dpg.add_spacer(height=6)
+                app.large_resume = dpg.add_checkbox(
+                    label="Resume interrupted runs",
+                    default_value=True,
+                    tag="large_resume",
+                )
+                app._inputs.append(app.large_resume)
+
+                dpg.add_spacer(height=6)
+                app.large_temp_dir = dpg.add_input_text(
+                    label="Temp folder (optional)",
+                    width=260,
+                    default_value="",
+                    tag="large_temp_dir",
+                )
+                app._inputs.append(app.large_temp_dir)
 
         dpg.add_spacer(height=18)
         dpg.add_text("Appearance", color=(200, 180, 90))
