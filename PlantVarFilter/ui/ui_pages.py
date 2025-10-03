@@ -1,11 +1,10 @@
 # ui/ui_pages.py
 from __future__ import annotations
-
+import traceback
 from pathlib import Path
 import os
 import platform as _pf
 import subprocess
-
 import dearpygui.dearpygui as dpg
 
 try:
@@ -38,6 +37,21 @@ except Exception:
     _HAS_PRE = False
 
 
+def _default_start_dir(app=None, prefer_desktop=True) -> str:
+    env = os.environ.get("PVF_START_DIR")
+    if env and Path(env).exists():
+        return env
+    if app is not None:
+        ws = getattr(app, "workspace_dir", None)
+        if ws and Path(ws).exists():
+            return str(Path(ws))
+    home = Path.home()
+    desktop = home / "Desktop"
+    if prefer_desktop and desktop.exists():
+        return str(desktop)
+    return str(home)
+
+
 def _open_in_os(path: str):
     try:
         if _pf.system() == "Windows":
@@ -50,23 +64,31 @@ def _open_in_os(path: str):
         pass
 
 
-def _file_input_row(label: str, tag_key: str, parent, file_extensions: tuple[str, ...] = (".*",), app=None):
+def _file_input_row(label: str, tag_key: str, parent, file_extensions: tuple[str, ...] = (".*",), app=None, default_dir: str | None = None):
     with dpg.group(parent=parent, horizontal=True, horizontal_spacing=8):
         dpg.add_text(label)
         dpg.add_input_text(tag=f"input_{tag_key}", width=460)
         dpg.add_button(label="Browse", callback=lambda: dpg.show_item(f"dlg_{tag_key}"))
-    with dpg.file_dialog(tag=f"dlg_{tag_key}", directory_selector=False, show=False,
+        dpg.add_button(label="Home", callback=lambda: dpg.set_value(f"input_{tag_key}", str(Path.home())))
+        if (Path.home() / "Desktop").exists():
+            dpg.add_button(label="Desktop", callback=lambda: dpg.set_value(f"input_{tag_key}", str(Path.home() / "Desktop")))
+    base = default_dir or _default_start_dir(app)
+    with dpg.file_dialog(tag=f"dlg_{tag_key}", directory_selector=False, show=False, default_path=base,
                          callback=lambda s, a: dpg.set_value(f"input_{tag_key}", a["file_path_name"])):
         for ext in file_extensions:
             dpg.add_file_extension(ext, color=(150, 150, 150, 255))
 
 
-def _dir_input_row(label: str, tag_key: str, parent):
+def _dir_input_row(label: str, tag_key: str, parent, app=None, default_dir: str | None = None):
     with dpg.group(parent=parent, horizontal=True, horizontal_spacing=8):
         dpg.add_text(label)
         dpg.add_input_text(tag=f"input_{tag_key}", width=460)
         dpg.add_button(label="Select", callback=lambda: dpg.show_item(f"dlg_{tag_key}"))
-    with dpg.file_dialog(tag=f"dlg_{tag_key}", directory_selector=True, show=False,
+        dpg.add_button(label="Home", callback=lambda: dpg.set_value(f"input_{tag_key}", str(Path.home())))
+        if (Path.home() / "Desktop").exists():
+            dpg.add_button(label="Desktop", callback=lambda: dpg.set_value(f"input_{tag_key}", str(Path.home() / "Desktop")))
+    base = default_dir or _default_start_dir(app)
+    with dpg.file_dialog(tag=f"dlg_{tag_key}", directory_selector=True, show=False, default_path=base,
                          callback=lambda s, a: dpg.set_value(f"input_{tag_key}", a["file_path_name"])):
         pass
 
@@ -77,7 +99,7 @@ def page_reference_manager(app, parent):
         dpg.add_spacer(height=10)
 
         _file_input_row("Reference FASTA:", "ref_fasta", parent, (".fa", ".fasta", ".fna", ".*"), app=app)
-        _dir_input_row("Reference out dir (optional):", "ref_out_dir", parent)
+        _dir_input_row("Reference out dir (optional):", "ref_out_dir", parent, app=app)
 
         dpg.add_spacer(height=6)
         dpg.add_button(label="Build / Refresh Indexes", width=240, height=36,
@@ -136,7 +158,7 @@ def page_fastq_qc(app, parent):
 
         _file_input_row("Reads #1 (R1 or single):", "fq_r1", parent, (".fastq", ".fq", ".fastq.gz", ".fq.gz", ".*"), app=app)
         _file_input_row("Reads #2 (R2, optional):", "fq_r2", parent, (".fastq", ".fq", ".fastq.gz", ".fq.gz", ".*"), app=app)
-        _dir_input_row("Output dir (optional):", "fq_out", parent)
+        _dir_input_row("Output dir (optional):", "fq_out", parent, app=app)
 
         with dpg.group(parent=parent, horizontal=True, horizontal_spacing=12):
             dpg.add_button(label="Run QC", width=200, height=36, callback=lambda: _on_run_fastq_qc(app))
@@ -206,13 +228,15 @@ def page_alignment(app, parent):
         with dpg.collapsing_header(label="Reference", parent=parent, default_open=True):
             dpg.add_text("For ONT/PB: select FASTA or .mmi\nFor Illumina: select bowtie2 prefix base path (no suffix).")
             _file_input_row("Reference (.fa/.mmi or bt2 prefix)", "aln_reference", parent,
-                            (".fa", ".fasta", ".fna", ".mmi", ".*"))
+                            (".fa", ".fasta", ".fna", ".mmi", ".*"), app=app)
 
         with dpg.collapsing_header(label="Reads", parent=parent, default_open=True):
             _file_input_row("Reads #1 (R1 or single):", "aln_r1", parent,
-                            (".fastq", ".fq", ".fastq.gz", ".fq.gz", ".*"))
+                            (".fastq", ".fq", ".fastq.gz", ".fq.gz", ".*"), app=app)
             _file_input_row("Reads #2 (R2, optional):", "aln_r2", parent,
-                            (".fastq", ".fq", ".fastq.gz", ".fq.gz", ".*"))
+                            (".fastq", ".fq", ".fastq.gz", ".fq.gz", ".*"), app=app)
+
+        _dir_input_row("Output dir (optional):", "aln_out", parent, app=app)
 
         with dpg.group(parent=parent, horizontal=True, horizontal_spacing=12):
             dpg.add_text("Threads")
@@ -234,50 +258,141 @@ def page_alignment(app, parent):
         dpg.add_child_window(tag="aln_result_area", parent=parent, width=-1, height=240, border=True)
     return "page_alignment"
 
+def _bt2_prefix_exists(prefix: str) -> bool:
+    p = Path(prefix)
+    suff = [".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2"]
+    return all((p.parent / (p.name + s)).exists() for s in suff)
+
+def _resolve_reference_for_alignment(ref: str, platform: str):
+    if not ref:
+        return None
+    p = Path(ref)
+    plat = (platform or "illumina").lower()
+
+    if plat in {"ont", "hifi", "pb"}:
+        if p.suffix.lower() in {".fa", ".fasta", ".fna", ".mmi"} and p.exists():
+            return str(p)
+        return None
+
+    if _bt2_prefix_exists(ref):
+        return ref
+
+    if p.suffix.lower() in {".fa", ".fasta", ".fna"} and p.exists():
+        cand = [
+            str(p.with_suffix("")),
+            str((p.parent / (p.stem + "_bt2")).resolve()),
+        ]
+        for c in cand:
+            if _bt2_prefix_exists(c):
+                return c
+        return None
+
+    return None
+
 
 def _on_run_alignment(app):
-    if not _HAS_PRE:
-        app.add_log("[ALN] Preanalysis modules not available in environment.", error=True)
-        return
-    ref = dpg.get_value("input_aln_reference")
-    r1 = dpg.get_value("input_aln_r1")
-    r2 = dpg.get_value("input_aln_r2") or None
-    platform = (dpg.get_value("aln_platform") or "illumina").lower()
-    threads = dpg.get_value("aln_threads") or 8
-    save_sam = bool(dpg.get_value("aln_save_sam"))
-    markdup = bool(dpg.get_value("aln_markdup"))
-    if not ref or not Path(ref).exists():
-        app.add_log("[ALN] Select a valid reference (.fa/.mmi or bowtie2 prefix path).", warn=True)
-        return
-    if not r1 or not Path(r1).exists():
-        app.add_log("[ALN] Select valid FASTQ reads.", warn=True)
-        return
-    rg = {}
-    for k in ("ID", "SM", "LB", "PL", "PU"):
-        v = dpg.get_value(f"aln_rg_{k}")
-        if v:
-            rg[k] = v
-    aln = Aligner(logger=app.add_log, workspace=app.workspace_dir)
-    if platform in {"ont", "hifi", "pb"}:
-        preset = "map-ont" if platform == "ont" else ("map-hifi" if platform == "hifi" else "map-pb")
-        reads = [r1] if not r2 else [r1, r2]
-        res = aln.minimap2(ref, reads, preset=preset, threads=threads, read_group=rg or None,
-                           save_sam=save_sam, mark_duplicates=markdup, out_dir=app.workspace_dir)
-    else:
-        res = aln.bowtie2(ref, r1, r2, threads=threads, read_group=rg or None,
-                          save_sam=save_sam, mark_duplicates=markdup, out_dir=app.workspace_dir)
-    dpg.delete_item("aln_result_area", children_only=True)
-    dpg.add_text(f"Tool: {res.tool}", parent="aln_result_area")
-    if res.sam:
-        dpg.add_text(f"SAM: {res.sam}", parent="aln_result_area")
-    dpg.add_text(f"BAM: {res.bam}", parent="aln_result_area")
-    dpg.add_text(f"BAI: {res.bai}", parent="aln_result_area")
-    dpg.add_text(f"flagstat: {res.flagstat}", parent="aln_result_area")
-    dpg.add_text(f"Elapsed: {res.elapsed_sec:.1f} sec", parent="aln_result_area")
-    dpg.add_spacer(height=6, parent="aln_result_area")
-    dpg.add_button(label="Open alignment folder", parent="aln_result_area",
-                   callback=lambda: _open_in_os(str(Path(res.bam).parent)))
-    app.add_log("[ALN] Alignment finished.")
+    import traceback
+    try:
+        if not _HAS_PRE:
+            app.add_log("[ALN] Preanalysis modules not available in environment.", error=True)
+            return
+
+        ref_in = dpg.get_value("input_aln_reference")
+        r1 = dpg.get_value("input_aln_r1")
+        r2 = dpg.get_value("input_aln_r2") or None
+        platform = (dpg.get_value("aln_platform") or "illumina").lower()
+        threads = dpg.get_value("aln_threads") or 8
+        save_sam = bool(dpg.get_value("aln_save_sam"))
+        markdup = bool(dpg.get_value("aln_markdup"))
+
+        out_dir_ui = dpg.get_value("input_aln_out") or ""
+        if out_dir_ui and not Path(out_dir_ui).exists():
+            try:
+                Path(out_dir_ui).mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                app.add_log(f"[ALN] Could not create output dir '{out_dir_ui}': {e}", warn=True)
+                out_dir_ui = ""
+
+        if r1 and Path(r1).exists():
+            default_out = str(Path(r1).parent)
+        else:
+            default_out = app.workspace_dir
+        out_dir = out_dir_ui or default_out
+
+        app.add_log(f"[ALN] START | ref='{ref_in}' | r1='{r1}' | r2='{r2}' | platform={platform} | threads={threads} | out='{out_dir}'")
+
+        ref_resolved = _resolve_reference_for_alignment(ref_in, platform)
+        if not ref_resolved:
+            app.add_log("[ALN] Select a valid reference (.fa/.mmi or bowtie2 prefix).", warn=True)
+            return
+
+        r1_ok = bool(r1) and Path(r1).is_file()
+        r2_ok = bool(r2) and Path(r2).is_file()
+        app.add_log(f"[ALN] DEBUG reads: R1 exists={r1_ok} | R2 exists={r2_ok}")
+
+        if not r1_ok:
+            app.add_log("[ALN] Select valid FASTQ reads (R1).", warn=True)
+            return
+        if r2 and not r2_ok:
+            app.add_log("[ALN] R2 not found or unreadable; continuing as single-end.", warn=True)
+            r2 = None
+
+        def _sample_prefix_from_r1(p: str) -> str:
+            name = Path(p).name
+            if name.endswith(".gz"):
+                name = name[:-3]
+            for ext in (".fastq", ".fq"):
+                if name.endswith(ext):
+                    name = name[: -len(ext)]
+            for tag in ("_R1", ".R1"):
+                if name.endswith(tag):
+                    name = name[: -len(tag)]
+            return name
+
+        base_prefix = _sample_prefix_from_r1(r1)
+        out_prefix = f"{base_prefix}.minimap2" if platform in {"ont", "hifi", "pb"} else f"{base_prefix}.bowtie2"
+
+        rg = {}
+        for k in ("ID", "SM", "LB", "PL", "PU"):
+            v = dpg.get_value(f"aln_rg_{k}")
+            if v:
+                rg[k] = v
+
+        aln = Aligner(logger=app.add_log, workspace=app.workspace_dir)
+
+        if platform in {"ont", "hifi", "pb"}:
+            preset = "map-ont" if platform == "ont" else ("map-hifi" if platform == "hifi" else "map-pb")
+            reads = [r1] if not r2 else [r1, r2]
+            res = aln.minimap2(
+                ref_resolved, reads, preset=preset, threads=threads,
+                read_group=rg or None, save_sam=save_sam,
+                mark_duplicates=markdup, out_dir=out_dir, out_prefix=out_prefix
+            )
+        else:
+            res = aln.bowtie2(
+                ref_resolved, r1, r2, threads=threads, read_group=rg or None,
+                save_sam=save_sam, mark_duplicates=markdup, out_dir=out_dir, out_prefix=out_prefix
+            )
+
+        dpg.delete_item("aln_result_area", children_only=True)
+        dpg.add_text(f"Tool: {res.tool}", parent="aln_result_area")
+        if res.sam:
+            dpg.add_text(f"SAM: {res.sam}", parent="aln_result_area")
+        dpg.add_text(f"BAM: {res.bam}", parent="aln_result_area")
+        dpg.add_text(f"BAI: {res.bai}", parent="aln_result_area")
+        dpg.add_text(f"flagstat: {res.flagstat}", parent="aln_result_area")
+        dpg.add_text(f"Elapsed: {res.elapsed_sec:.1f} sec", parent="aln_result_area")
+        dpg.add_spacer(height=6, parent="aln_result_area")
+        dpg.add_button(
+            label="Open alignment folder",
+            parent="aln_result_area",
+            callback=lambda: _open_in_os(str(Path(res.bam).parent))
+        )
+        app.add_log("[ALN] Alignment finished.")
+
+    except Exception as e:
+        app.add_log(f"[ALN] ERROR: {e}", error=True)
+        app.add_log(traceback.format_exc(), error=True)
 
 
 def page_preprocess_samtools(app, parent):

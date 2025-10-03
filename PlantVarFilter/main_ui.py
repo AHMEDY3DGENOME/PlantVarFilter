@@ -54,7 +54,7 @@ class GWASApp:
         self._primary_buttons = []
         self._secondary_buttons = []
         self._file_dialogs = []
-        self.default_path = "/"
+        self.default_path = self._compute_default_path()
         self.night_mode = True
 
         self._wm_alpha = 48
@@ -171,12 +171,28 @@ class GWASApp:
 
         self._gui_ready = False
 
-        # cache for reference indexes built in Reference Manager
         self._ref_info = {"fasta": None, "out_dir": None, "prefix": None}
 
     @property
     def workspace_dir(self) -> str:
         return self._workspace_dir
+
+    def _compute_default_path(self) -> str:
+        env = os.environ.get("PVF_START_DIR")
+        if env and os.path.exists(env):
+            return env
+        ws = getattr(self, "_workspace_dir", "") or os.getcwd()
+        if ws and os.path.exists(ws):
+            return ws
+        home = os.path.expanduser("~")
+        desktop = os.path.join(home, "Desktop")
+        return desktop if os.path.exists(desktop) else home
+
+    def _refresh_dialog_default_paths(self):
+        self.default_path = self._compute_default_path()
+        for tag in self._file_dialogs:
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, default_path=self.default_path)
 
     def _set_workspace_dir(self, directory: str):
         try:
@@ -185,6 +201,7 @@ class GWASApp:
             os.makedirs(directory, exist_ok=True)
             self._workspace_dir = directory
             self._rebind_output_paths()
+            self._refresh_dialog_default_paths()
             if getattr(self, "_gui_ready", False):
                 self.add_log(f"[WS] Workspace set to: {directory}")
         except Exception as e:
@@ -279,6 +296,7 @@ class GWASApp:
         dpg.set_primary_window("PrimaryWindow", True)
 
         self._build_file_dialogs()
+        self._refresh_dialog_default_paths()
 
         with dpg.window(label="Workspace", tag="WorkspaceWindow", width=1600, height=1000, pos=(10, 10)):
             with dpg.group(horizontal=True, horizontal_spacing=12):
@@ -479,7 +497,7 @@ class GWASApp:
             tag="file_dialog_bam",
             file_count=1,
             exts=[
-                (".sam", (180, 180, 180, 255)),  # NEW
+                (".sam", (180, 180, 180, 255)),
                 (".bam", (255, 180, 120, 255)),
                 (".*", (200, 200, 200, 255)),
             ]
@@ -554,7 +572,6 @@ class GWASApp:
                 dpg.add_text("", color=(220, 200, 120) if self.night_mode else (40, 90, 40))
 
     def run_ld_analysis(self, s, data):
-        # Gather inputs
         bed_path = self._get_appdata_path_safe(self.bed_app_data)
         vcf_path = self._get_appdata_path_safe(self.vcf_app_data)
         if not bed_path and not vcf_path:
@@ -563,13 +580,13 @@ class GWASApp:
 
         try:
             window_kb = int(dpg.get_value(self.ld_window_kb)) if dpg.does_item_exist(self.ld_window_kb) else 500
-            window_snps = int(dpg.get_value(self.ld_window_snps)) if dpg.does_item_exist(self.ld_window_snps) else 5000
-            max_kb = int(dpg.get_value(self.ld_max_dist_kb)) if dpg.does_item_exist(self.ld_max_dist_kb) else 1000
+            window_snps = int(dpg.get_value(self.ld_window_snp)) if dpg.does_item_exist(self.ld_window_snp) else 5000
+            max_kb = int(dpg.get_value(self.ld_max_kb)) if dpg.does_item_exist(self.ld_max_kb) else 1000
             min_r2 = float(dpg.get_value(self.ld_min_r2)) if dpg.does_item_exist(self.ld_min_r2) else 0.1
-            region = dpg.get_value(self.ld_region_inp).strip() if dpg.does_item_exist(self.ld_region_inp) else ""
+            region = dpg.get_value(self.ld_region).strip() if dpg.does_item_exist(self.ld_region) else ""
             do_decay = bool(dpg.get_value(self.ld_do_decay)) if dpg.does_item_exist(self.ld_do_decay) else True
             do_heat = bool(dpg.get_value(self.ld_do_heatmap)) if dpg.does_item_exist(self.ld_do_heatmap) else True
-            do_div = bool(dpg.get_value(self.ld_do_diversity)) if dpg.does_item_exist(self.ld_do_diversity) else True
+            do_div = bool(dpg.get_value(self.ld_do_div)) if dpg.does_item_exist(self.ld_do_div) else True
         except Exception as e:
             self.add_log(f"[LD] Invalid inputs: {e}", error=True)
             return
@@ -628,7 +645,6 @@ class GWASApp:
             self.add_log(f"[LD] Analysis failed: {e}", error=True)
             return
 
-        # Render results
         self.ensure_results_window(show=True, title="LD Analysis")
         dpg.delete_item(self._results_body, children_only=True)
 
@@ -695,12 +711,11 @@ class GWASApp:
 
             self.add_log("[KIN] Loading genotype matrix...")
             bed = Bed(str(bed_path), count_A1=False, chrom_map=chrom_mapping)
-            X = bed.read().val.astype(float)  # shape: samples x snps
-            iid = bed.iid  # array of [FID, IID]
+            X = bed.read().val.astype(float)
+            iid = bed.iid
 
             self.add_log("[KIN] Computing allele frequencies...")
-            # X is coded 0/1/2, NaN for missing
-            p = np.nanmean(X, axis=0) / 2.0  # allele freq per SNP
+            p = np.nanmean(X, axis=0) / 2.0
             valid = np.isfinite(p) & (p > 0.0) & (p < 1.0)
             if not np.any(valid):
                 self.add_log("[KIN] No informative SNPs for kinship (all monomorphic/missing).", error=True)
@@ -708,9 +723,7 @@ class GWASApp:
 
             Xv = X[:, valid]
             pv = p[valid]
-            # Mean-impute missing using 2p, then standardize
             self.add_log("[KIN] Standardizing genotypes...")
-            # center
             Xv_centered = Xv.copy()
             nan_mask = ~np.isfinite(Xv_centered)
             if np.any(nan_mask):
@@ -718,14 +731,12 @@ class GWASApp:
             Xv_centered -= (2.0 * pv)
 
             denom = np.sqrt(2.0 * pv * (1.0 - pv))
-            # avoid division by zero (already filtered)
             Z = Xv_centered / denom
 
             self.add_log("[KIN] Building GRM...")
             M = Z.shape[1]
-            G = (Z @ Z.T) / float(M)  # samples x samples
+            G = (Z @ Z.T) / float(M)
 
-            # Labels
             sample_ids = [f"{fid}_{iid_}" for fid, iid_ in iid.tolist()]
             df_grm = pd.DataFrame(G, index=sample_ids, columns=sample_ids)
 
@@ -733,7 +744,6 @@ class GWASApp:
             out_csv = os.path.join(self._workspace_dir, f"{base}_kinship.csv")
             df_grm.to_csv(out_csv, index=True)
 
-            # Keep a reference in the app state
             self.kinship_path_last = out_csv
             try:
                 if hasattr(self, "_set_virtual_selection"):
@@ -1050,9 +1060,6 @@ class GWASApp:
             'selections': {'file': file_path}
         })
 
-    # ------------------------------------------------------------------
-    # Helpers for new modules
-    # ------------------------------------------------------------------
     def _val(self, *tags):
         for t in tags:
             if dpg.does_item_exist(t):
@@ -1081,9 +1088,6 @@ class GWASApp:
             raise RuntimeError(f"command failed: {' '.join(cmd)}")
         return p.returncode
 
-    # ------------------------------------------------------------------
-    # File dialog callbacks
-    # ------------------------------------------------------------------
     def callback_vcf(self, s, app_data):
         self.vcf_app_data = app_data
         vcf_path, current_path = self.get_selection_path(self.vcf_app_data)
@@ -1145,6 +1149,7 @@ class GWASApp:
                 self._set_text(tag, name)
         except TypeError:
             self.add_log('Wrong Pheno File Selected', error=True)
+
     def callback_gtf(self, s, app_data):
         self.gtf_app_data = app_data
         try:
@@ -1157,8 +1162,6 @@ class GWASApp:
                 self._set_text("gwas_gtf_path_lbl", self._fmt_name(gtf_path))
         except Exception:
             self.add_log('Invalid GTF/GFF annotation file', error=True)
-
-
 
     def callback_cov(self, s, app_data):
         self.cov_app_data = app_data
@@ -1280,9 +1283,6 @@ class GWASApp:
     def cancel_callback_directory(self, s, app_data):
         self.add_log('Process Canceled')
 
-    # ------------------------------------------------------------------
-    # New actions: Reference Manager, FASTQ QC, Alignment
-    # ------------------------------------------------------------------
     def ref_build_indexes(self, s=None, a=None):
         fasta = self._val("ref_fasta_path_inp", "ref_fasta_path")
         out_dir = self._val("ref_out_dir_inp", "ref_out_dir") or (os.path.dirname(fasta) if fasta else "")
@@ -1395,9 +1395,6 @@ class GWASApp:
         except Exception as e:
             self.add_log(f"[ALN] Failed: {e}", error=True)
 
-    # ------------------------------------------------------------------
-    # Existing actions (unchanged)
-    # ------------------------------------------------------------------
     def run_samtools_preprocess(self, s, data):
         try:
             in_path = self.get_selection_path(self.bam_app_data)[0]
@@ -1669,11 +1666,11 @@ class GWASApp:
         names = []
         if vcf1:
             r1 = self.vcf_qc_checker.evaluate(vcf1, log_fn=self.add_log)
-            reports.append(r1);
+            reports.append(r1)
             names.append(self._fmt_name(vcf1))
         if vcf2:
             r2 = self.vcf_qc_checker.evaluate(vcf2, log_fn=self.add_log)
-            reports.append(r2);
+            reports.append(r2)
             names.append(self._fmt_name(vcf2))
 
         self.ensure_results_window(show=True, title="VCF QC Results")
@@ -2426,7 +2423,6 @@ class GWASApp:
 
                 self._add_top_snps_tab(parent_tabbar_tag=gwas_tabbar, top_n=100)
 
-                # QTL / Region tools tab
                 with dpg.tab(label="QTL / Region tools"):
                     with dpg.group(horizontal=True, horizontal_spacing=8):
                         dpg.add_input_text(tag="qtl_region_inp", label="Region (chr:start-end)", width=260,
@@ -2454,13 +2450,12 @@ class GWASApp:
             safe = region.replace(":", "_").replace("-", "_").replace(",", "")
             out_csv = os.path.join(self._workspace_dir, f"gwas_region_{safe}.csv")
 
-            # Reuse plot_gwas to write region-only CSV without overwriting plots
             self.gwas.plot_gwas(
                 df=df,
                 limit=None,
                 algorithm=getattr(self, "algorithm", "FaST-LMM"),
-                manhatten_plot_name=self.manhatten_plot_name,  # ignored here effectively
-                qq_plot_name=self.qq_plot_name,  # ignored here effectively
+                manhatten_plot_name=self.manhatten_plot_name,
+                qq_plot_name=self.qq_plot_name,
                 chrom_mapping=getattr(self, "_chrom_mapping_last", None),
                 region=region,
                 region_only_csv=out_csv,
