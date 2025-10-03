@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from typing import List, Optional, Tuple, Callable, Union, Dict
 
-from .bcftools_utils import BCFtools
+from bcftools_utils import BCFtools
 
 try:
     from PlantVarFilter.linux import resolve_tool
@@ -27,9 +27,7 @@ def _resolve_exe(name: str) -> str:
     p = shutil.which(name)
     if p:
         return p
-    raise VariantCallerError(
-        f"Executable not found: {name}. Bundle it under PlantVarFilter/linux or add to PATH."
-    )
+    raise VariantCallerError(f"Executable not found: {name}. Bundle it under PlantVarFilter/linux or add to PATH.")
 
 
 class VariantCaller:
@@ -71,10 +69,6 @@ class VariantCaller:
         log: LogFn = print,
         split_after_calling: bool = False,
     ) -> Tuple[str, str]:
-        """
-        Returns (vcf_gz, tbi_path).
-        If split_after_calling is True, SNP/INDEL paths are available via self.get_last_split().
-        """
         if not os.path.exists(ref_fasta):
             raise VariantCallerError(f"Reference FASTA not found: {ref_fasta}")
 
@@ -88,8 +82,13 @@ class VariantCaller:
             out_prefix = os.path.join(workdir, "calls")
 
         vcf_gz = f"{out_prefix}.vcf.gz"
+        out_dir = os.path.dirname(vcf_gz) or "."
+        os.makedirs(out_dir, exist_ok=True)
 
         bam_list_path = None
+        single_bam: Optional[str] = None
+        is_temp_bamlist = False
+
         if isinstance(bams, list):
             if len(bams) == 0:
                 raise VariantCallerError("No BAMs provided.")
@@ -103,11 +102,13 @@ class VariantCaller:
                         fh.write(b + "\n")
                 bam_list_path = tmp
                 single_bam = None
+                is_temp_bamlist = True
         else:
             if not os.path.exists(bams):
                 raise VariantCallerError(f"BAM list not found: {bams}")
             bam_list_path = bams
             single_bam = None
+            is_temp_bamlist = False
 
         try:
             mp_cmd = [
@@ -136,14 +137,14 @@ class VariantCaller:
                 self.bcftools,
                 "call",
                 "-mv",
-                "-ploidy",
+                "--ploidy",
                 str(ploidy),
                 "-Oz",
                 "-o",
                 vcf_gz,
             ]
             if threads and threads > 1:
-                call_cmd = ["taskset", "-c", "0-{}".format(max(0, threads - 1))] + call_cmd  # optional CPU pinning
+                call_cmd = ["taskset", "-c", f"0-{max(0, threads - 1)}"] + call_cmd
 
             log(" | ".join([" ".join(mp_cmd), " ".join(call_cmd)]))
             p1 = subprocess.Popen(mp_cmd, stdout=subprocess.PIPE)
@@ -177,7 +178,7 @@ class VariantCaller:
 
             return vcf_gz, vcf_gz + ".tbi"
         finally:
-            if bam_list_path and os.path.exists(bam_list_path):
+            if is_temp_bamlist and bam_list_path and os.path.exists(bam_list_path):
                 try:
                     os.remove(bam_list_path)
                 except Exception:
