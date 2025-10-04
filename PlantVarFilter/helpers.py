@@ -1,20 +1,21 @@
-import pandas as pd
-import numpy as np
-from datetime import datetime
 import os
 import shutil
+import subprocess
 import configparser
+from datetime import datetime
+import numpy as np
+import pandas as pd
+
+try:
+    from PlantVarFilter.linux import resolve_tool as _resolve_tool
+except Exception:
+    _resolve_tool = None
 
 
 class HELPERS:
-    # def duplicate_column(self, input_file, output_file):
-    #     """Depreciated."""
-    #     df = pd.read_csv(input_file, header=None)
-    #     df[1] = df[0]
-    #     df.to_csv(output_file, index=False, header=False, sep=' ')
+    COMMON_PLINK_FLAGS = ["--allow-extra-chr", "--chr-set", "26"]
 
     def replace_with_integers(self, input_file):
-        """Replace string chromosome names with integers."""
         mapping = {}
         current_integer = 1.0
         with open(input_file, 'r', errors="ignore") as infile:
@@ -33,33 +34,27 @@ class HELPERS:
         return mapping
 
     def get_timestamp(self):
-        """Get timestamp."""
         now = datetime.now()
         dt_string = now.strftime("%d%m%Y_%H%M%S")
         return dt_string
 
     def save_raw_data(self, bed, pheno):
-        """Save the SNP matrix."""
         np.save('snp', bed.read().val)
         np.savez_compressed('snp.npz', bed.read().val)
         np.save('pheno', pheno.read().val)
 
     def save_settings(self, default_path):
-        """Save the user settings."""
         config = configparser.ConfigParser()
         config['DefaultSettings'] = {'path': default_path, 'algorithm': 'FaST-LMM'}
         with open('settings.ini', 'w') as configfile:
             config.write(configfile)
 
     def get_settings(self, setting):
-        """Get the user settings."""
         config = configparser.ConfigParser()
         config.read('settings.ini')
         return config['DefaultSettings'][setting]
 
-    # ---------- helpers ----------
     def _safe_copy(self, src_path, dst_dir, add_log):
-        """Copy a file if it exists. Returns True if copied."""
         if not src_path:
             return False
         if os.path.exists(src_path):
@@ -74,7 +69,6 @@ class HELPERS:
         return False
 
     def _make_top_snps_csv(self, gwas_result_path, out_path, add_log, top_n=100):
-        """Create a concise CSV of top SNPs according to available columns."""
         try:
             if not (gwas_result_path and os.path.exists(gwas_result_path)):
                 return
@@ -91,24 +85,22 @@ class HELPERS:
             add_log(f"[TopSNPs] Failed to create top SNPs: {e}", warn=True)
 
     def save_results(
-            self,
-            current_dir,
-            save_dir,
-            gwas_result_name,
-            gwas_result_name_top,
-            manhatten_plot_name,
-            qq_plot_name,
-            algorithm,
-            genomic_predict_name,
-            gp_plot_name,
-            gp_plot_name_scatter,
-            add_log,
-            settings_lst,
-            pheno_stats_name,
-            geno_stats_name
+        self,
+        current_dir,
+        save_dir,
+        gwas_result_name,
+        gwas_result_name_top,
+        manhatten_plot_name,
+        qq_plot_name,
+        algorithm,
+        genomic_predict_name,
+        gp_plot_name,
+        gp_plot_name_scatter,
+        add_log,
+        settings_lst,
+        pheno_stats_name,
+        geno_stats_name
     ):
-        """Store analysis files under a writable folder; never drop files in '/' or code dir."""
-
         def _is_writable(path: str) -> bool:
             try:
                 if not path:
@@ -118,7 +110,6 @@ class HELPERS:
             except Exception:
                 return False
 
-        # —— choose a safe base dir ——
         base_dir_candidates = [
             save_dir,
             current_dir,
@@ -131,14 +122,12 @@ class HELPERS:
                 base_dir = os.path.abspath(cand)
                 break
         if base_dir is None:
-            # last resort: process working dir (may still fail, but we tried)
             base_dir = os.getcwd()
             add_log(f"[SAVE] No writable directory found, falling back to {base_dir}", warn=True)
         else:
             if save_dir and os.path.abspath(save_dir) != base_dir:
                 add_log(f"[SAVE] Selected folder not writable; using {base_dir} instead.", warn=True)
 
-        # —— create destination folder ——
         safe_algo = str(algorithm or "Run").replace(" ", "_")
         ts = self.get_timestamp() + "_" + safe_algo
         dest_dir = os.path.join(base_dir, ts)
@@ -146,15 +135,13 @@ class HELPERS:
             os.makedirs(dest_dir, exist_ok=True)
         except Exception as e:
             add_log(f"Can not create folder '{dest_dir}': {e}", error=True)
-            return base_dir  # bail out with something sensible
+            return base_dir
 
-        # —— build helper for resolving relative inputs (from current_dir) ——
         def _abs_or_join(p):
             if not p:
                 return None
             return p if os.path.isabs(p) else os.path.join(current_dir, os.path.basename(p))
 
-        # —— create Top10k inside dest_dir (not next to code) ——
         try:
             if gwas_result_name and os.path.exists(gwas_result_name):
                 df = pd.read_csv(gwas_result_name)
@@ -162,22 +149,18 @@ class HELPERS:
         except Exception as e:
             add_log(f"[SAVE] Could not create top 10000 GWAS CSV: {e}", warn=True)
 
-        # —— create TopSNPs inside dest_dir ——
         try:
             top_snps_path = os.path.join(dest_dir, "gwas_top_snps.csv")
             self._make_top_snps_csv(gwas_result_name, top_snps_path, add_log, top_n=100)
         except Exception as e:
             add_log(f"[TopSNPs] Could not generate: {e}", warn=True)
 
-        # —— resolve optional “high-res / validation” companion outputs ——
         manh_high = _abs_or_join(str(manhatten_plot_name or "").replace('manhatten_plot', 'manhatten_plot_high'))
         qq_high = _abs_or_join(str(qq_plot_name or "").replace('qq_plot', 'qq_plot_high'))
-        gp_scatter_high = _abs_or_join(
-            str(gp_plot_name_scatter or "").replace('GP_scatter_plot', 'GP_scatter_plot_high'))
+        gp_scatter_high = _abs_or_join(str(gp_plot_name_scatter or "").replace('GP_scatter_plot', 'GP_scatter_plot_high'))
         gp_ba_high = _abs_or_join(str(gp_plot_name or "").replace('Bland_Altman_plot', 'Bland_Altman_plot_high'))
         gp_validation = _abs_or_join(str(genomic_predict_name or "").replace('.csv', '_valdation.csv'))
 
-        # —— files to copy into dest_dir ——
         src_files = [
             _abs_or_join(gwas_result_name),
             _abs_or_join(genomic_predict_name),
@@ -193,7 +176,6 @@ class HELPERS:
         for src in src_files:
             self._safe_copy(src, dest_dir, add_log)
 
-        # —— write run log inside dest_dir ——
         try:
             log_path = os.path.join(dest_dir, 'log.txt')
             with open(log_path, 'w', encoding='utf-8') as log_file:
@@ -221,7 +203,6 @@ class HELPERS:
         return dest_dir
 
     def merge_gp_models(self, dataframes):
-        """Merge all GP ML models."""
         df_combined = pd.concat(dataframes)
         df_result = df_combined.groupby(['ID1', 'BED_ID2'])['Predicted_Value'].mean().reset_index()
         df_result = pd.merge(dataframes[0], df_result, on='ID1', how='left')
@@ -233,7 +214,6 @@ class HELPERS:
         return df_result
 
     def merge_models(self, dataframes, method):
-        """Merge all GWAS ML models."""
         df_combined = pd.concat(dataframes)
         df_combined = df_combined[df_combined['PValue'] > 0]
         df_grouped = df_combined.groupby(['SNP', 'Chr', 'ChrPos'])['PValue'].agg([method, 'std']).reset_index()
@@ -243,3 +223,23 @@ class HELPERS:
         df_result['ChrPos'] = df_result['ChrPos'].astype(int)
         df_result = df_result.sort_values(by=['Chr', 'ChrPos'])
         return df_result
+
+    @staticmethod
+    def plink_bin() -> str:
+        if '_resolve_tool' in globals() and _resolve_tool is not None:
+            p = _resolve_tool("plink")
+            if p:
+                return p
+        p = shutil.which("plink")
+        return p if p else "plink"
+
+    def run_plink(self, cmd, log=print):
+        log(" ".join(cmd))
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if p.stdout:
+            for ln in p.stdout.strip().splitlines():
+                log(ln)
+        if p.returncode != 0:
+            if p.stderr:
+                log(p.stderr.strip())
+            raise RuntimeError("plink failed with exit code {}".format(p.returncode))
