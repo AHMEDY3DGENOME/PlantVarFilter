@@ -1856,7 +1856,6 @@ class GWASApp:
 
     def run_gwas(self, s, data, user_data):
         self.delete_files()
-
         try:
             train_size_set = (100 - dpg.get_value(self.train_size_set)) / 100
         except Exception:
@@ -1899,7 +1898,6 @@ class GWASApp:
             bed_path = self.get_selection_path(self.bed_app_data)[0]
             pheno_path = self.get_selection_path(self.pheno_app_data)[0]
 
-            kin_path = None
             try:
                 kin_path = self._get_appdata_path_safe(getattr(self, "kinship_app_data", None))
             except Exception:
@@ -1954,11 +1952,12 @@ class GWASApp:
                     df_bim = pd.read_csv(bim_path, sep=r"\s+", header=None, engine="python")
                     df_bim.columns = ["Chr", "SNP", "NA1", "ChrPos", "NA2", "NA3"]
                     chr_vals = df_bim["Chr"].astype(str)
-                    mask_chr = (chr_vals == str(region_chr)) | (chr_vals == str(
-                        self.helper.replace_with_integers_value(region_chr) if hasattr(
-                            self.helper, "replace_with_integers_value") else region_chr))
+                    mask_chr = (chr_vals == str(region_chr)) | (
+                            chr_vals == str(self.helper.replace_with_integers_value(region_chr)
+                                            if hasattr(self.helper, "replace_with_integers_value") else region_chr)
+                    )
                     mask_pos = (df_bim["ChrPos"].astype(int) >= region_start) & (
-                            df_bim["ChrPos"].astype(int) <= region_end)
+                                df_bim["ChrPos"].astype(int) <= region_end)
                     df_sub = df_bim[mask_chr & mask_pos]
                     if not df_sub.empty:
                         snp_keep = set(df_sub["SNP"].astype(str).tolist())
@@ -1967,8 +1966,7 @@ class GWASApp:
                             prev = bed_fixed.sid_count
                             bed_fixed = bed_fixed[:, snp_mask]
                             self.add_log(
-                                f"[Region] Filter applied: {region_chr}:{region_start}-{region_end} → {bed_fixed.sid_count}/{prev} SNPs kept"
-                            )
+                                f"[Region] Filter applied: {region_chr}:{region_start}-{region_end} → {bed_fixed.sid_count}/{prev} SNPs kept")
                         else:
                             self.add_log(
                                 f"[Region] No SNPs matched {region_chr}:{region_start}-{region_end}. Proceeding without region filter.",
@@ -1980,10 +1978,8 @@ class GWASApp:
             except Exception as ex_region:
                 self.add_log(f"[Region] Failed to apply region filter: {ex_region}", warn=True)
 
-            self.add_log(
-                f"Dataset after intersection: SNPs: {bed_fixed.sid_count}  Pheno IDs: {pheno.iid_count}",
-                warn=True,
-            )
+            self.add_log(f"Dataset after intersection: SNPs: {bed_fixed.sid_count}  Pheno IDs: {pheno.iid_count}",
+                         warn=True)
             self.add_log("Starting Analysis, this might take a while...")
 
             if self.algorithm in ("FaST-LMM", "Linear regression"):
@@ -1991,11 +1987,11 @@ class GWASApp:
                     bed_fixed=bed_fixed,
                     pheno=pheno,
                     chrom_mapping=chrom_mapping,
-                    log_fn=self.add_log,
-                    out_csv=self.gwas_result_name,
+                    add_log=self.add_log,
+                    gwas_result_name=self.gwas_result_name,
                     algorithm=self.algorithm,
-                    bed_path=bed_path,
-                    cov=cov,
+                    bed_file=bed_path,
+                    cov_file=cov,
                     gb_goal=gb_goal,
                     kinship_path=kin_path,
                 )
@@ -2084,7 +2080,6 @@ class GWASApp:
                     gtf_path = self._get_appdata_path_safe(getattr(self, "gtf_app_data", None))
                 except Exception:
                     gtf_path = None
-
                 if gtf_path and os.path.exists(self.gwas_result_name):
                     try:
                         from annotation_utils import Annotator
@@ -2104,15 +2099,16 @@ class GWASApp:
 
             self.add_log("Done...")
             self.show_results_window(gwas_df, self.algorithm, genomic_predict=False)
-
             self.bed_app_data = None
             self.pheno_app_data = None
             self.cov_app_data = None
 
-        except TypeError:
-            self.add_log("Please select a phenotype and genotype file.", error=True)
+        except TypeError as e:
+            self.add_log(f"TypeError in GWAS: {e}", error=True)
+            return
         except Exception as e:
             self.add_log(f"Unexpected error in GWAS: {e}", error=True)
+            return
 
     def run_genomic_prediction(self, s, data, user_data):
         self.delete_files()
