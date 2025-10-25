@@ -140,90 +140,120 @@ class GWAS:
         bed_fixed = bed[:, ~all_nan]
         return bed_fixed
 
-    def validate_gwas_input_files(self, bed_file, pheno_file):
-        fam_path = bed_file.replace('.bed', '.fam')
-        if not os.path.exists(fam_path):
-            return False, f"FAM file not found: {fam_path}"
-        if not os.path.exists(pheno_file):
-            return False, f"Phenotypic file not found: {pheno_file}"
+    def validate_gwas_input_files(self, bed_file: str, pheno_file: str):
+        import re, itertools
 
-        fam_data = _read_lines_with_fallback(fam_path)
-        fam_ids = []
-        for line in fam_data:
-            parts = line.strip().split()
-            if len(parts) > 1:
-                fam_ids.append(parts[0])
-            else:
-                return False, "FAM file is not whitespace-delimited."
+        def _report(**kw):
+            lines = ["[VALIDATE-REPORT]"]
+            for k, v in kw.items():
+                lines.append(f"{k}: {v}")
+            msg = "\n".join(lines)
+            print(msg)  # يظهر في الـLog
+            return msg
+
+        if not bed_file or not os.path.exists(bed_file):
+            msg = _report(status="ERROR", reason="BED missing", bed_file=bed_file)
+            return False, msg
+
+        prefix = bed_file.replace(".bed", "")
+        fam_path = prefix + ".fam"
+        bim_path = prefix + ".bim"
+        issues = {}
+
+        for need in ((".bim", bim_path), (".fam", fam_path), ("pheno", pheno_file)):
+            if not need[1] or not os.path.exists(need[1]):
+                msg = _report(status="ERROR", reason=f"Missing {need[0]}", path=need[1])
+                return False, msg
+
+        fam_lines = _read_lines_with_fallback(fam_path)
+        fam_pairs, fam_iids = [], set()
+        for ln in fam_lines:
+            parts = ln.strip().split()
+            if len(parts) < 2:
+                msg = _report(status="ERROR", reason="FAM not whitespace-delimited", line=ln[:80])
+                return False, msg
+            fid, iid = parts[0].strip(), parts[1].strip()
+            fam_pairs.append((fid, iid))
+            fam_iids.add(iid)
 
         ext = os.path.splitext(pheno_file)[1].lower()
-        pheno_ids = []
-        columns_seen = None
-
+        rows = []
         if ext in (".xlsx", ".xls"):
             try:
-                dfp = pd.read_excel(pheno_file, header=None)
+                dfp = pd.read_excel(pheno_file, header=0).dropna(how="all")
             except Exception as e:
-                return False, f"Failed to read Excel phenotype: {e}"
-
-            dfp = dfp.dropna(how="all")
-            if dfp.shape[1] < 3:
-                return False, "Invalid phenotypic Excel file. Needs 3 columns (FID IID Value)."
-
-            dfp = dfp.iloc[:, :3]
-            columns_seen = 3
-            pheno_ids = [str(x) for x in dfp.iloc[:, 0].astype(str).tolist()]
+                msg = _report(status="ERROR", reason=f"Excel read failed: {e}")
+                return False, msg
+            rows = dfp.values.tolist()
         else:
-            raw_lines = _read_lines_with_fallback(pheno_file)
-
-            def split_smart(s: str):
-                s = s.replace("\u00A0", " ").strip()
+            raw = _read_lines_with_fallback(pheno_file)
+            splitter = re.compile(r"[,\t;|:\s]+")
+            for ln in raw:
+                s = ln.replace("\u00A0", " ").strip()
                 if not s or s.startswith("#"):
-                    return None
-                candidates = []
-                candidates.append(s.split())
-                candidates.append(s.split(","))
-                candidates.append(s.split(";"))
-                candidates.append(s.split("\t"))
-                candidates.append(s.split("|"))
-                candidates.append(s.split(":"))
-                cleaned = []
-                for parts in candidates:
-                    parts = [p.strip().strip('"').strip("'") for p in parts if p.strip() != ""]
-                    cleaned.append(parts)
-                best = max(cleaned, key=lambda x: len(x))
-                return best if len(best) > 0 else None
-
-            rows = []
-            for ln in raw_lines:
-                parts = split_smart(ln)
-                if parts is None:
                     continue
-                rows.append(parts)
-                if columns_seen is None:
-                    columns_seen = len(parts)
+                parts = [p for p in splitter.split(s) if p]
+                if parts:
+                    rows.append(parts)
 
+        if not rows:
+            msg = _report(status="ERROR", reason="Phenotype empty after parsing")
+            return False, msg
+
+        def looks_like_header(rec):
+            sample = " ".join(rec[:3]).upper()
+            tokens = {"FID", "IID", "PHENO", "TRAIT", "VALUE", "PHENOTYPE"}
+            return any(tok in sample for tok in tokens)
+
+        header_used = False
+        if looks_like_header(rows[0]):
+            header_used = True
+            rows = rows[1:]
             if not rows:
-                return False, "Phenotypic file appears empty."
+                msg = _report(status="ERROR", reason="Phenotype only header")
+                return False, msg
 
-            from collections import Counter
-            cnt = Counter(len(r) for r in rows)
-            common_cols = cnt.most_common(1)[0][0]
+        col_counts = [len(r) for r in rows]
+        common_cols = max(set(col_counts), key=col_counts.count)
+        if common_cols < 2:
+            msg = _report(status="ERROR", reason="Phenotype <2 columns", col_counts=col_counts[:10])
+            return False, msg
 
-            if common_cols < 3:
-                return False, "Invalid phenotypic file. File should contain 3 columns (FID IID Value)."
+        pheno_pairs = []
+        for r in rows:
+            if len(r) < common_cols:
+                continue
+            if common_cols >= 3:
+                fid, iid = str(r[0]).strip(), str(r[1]).strip()
+            else:
+                fid, iid = "", str(r[0]).strip()
+            pheno_pairs.append((fid, iid))
 
-            columns_seen = common_cols
-            pheno_ids = [r[0] for r in rows if len(r) >= common_cols]
+        if not pheno_pairs:
+            msg = _report(status="ERROR", reason="No usable phenotype records")
+            return False, msg
 
-        check_ids = any(x in pheno_ids for x in fam_ids)
+        pheno_iids = {iid for _, iid in pheno_pairs}
+        overlap = fam_iids & pheno_iids
 
-        if check_ids and columns_seen == 3:
-            return True, "Input files validated."
-        elif columns_seen != 3:
-            return False, "Invalid phenotypic file. File should contain 3 columns (FID IID Value)."
-        else:
-            return False, "Phenotypic IDs do not match .fam file IDs."
+        msg = _report(
+            status="OK" if overlap else "MISMATCH",
+            bed_file=bed_file,
+            fam_path=fam_path,
+            pheno_file=pheno_file,
+            fam_rows=len(fam_pairs),
+            pheno_rows=len(pheno_pairs),
+            header_detected=header_used,
+            common_cols=common_cols,
+            fam_IIDs_sample=list(itertools.islice(iter(fam_iids), 5)),
+            pheno_IIDs_sample=list(itertools.islice(iter(pheno_iids), 5)),
+            overlap_count=len(overlap),
+            missing_in_pheno_sample=list(itertools.islice((x for x in fam_iids if x not in pheno_iids), 5)),
+        )
+
+        if not overlap:
+            return False, msg
+        return True, "Input files validated."
 
     # ---------------------------
     # GWAS (FaST-LMM / Linear)
