@@ -1,4 +1,4 @@
-# PlantVarFilter/preanalysis/aligner.py
+# plantvarfilter/preanalysis/aligner.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,17 +10,17 @@ import subprocess
 import time
 
 try:
-    from PlantVarFilter.variant_caller_utils import resolve_tool  # type: ignore
+    from plantvarfilter.variant_caller_utils import resolve_tool  # type: ignore
 except Exception:
     resolve_tool = shutil.which  # fallback
 
 try:
-    from PlantVarFilter.samtools_utils import Samtools  # type: ignore
+    from plantvarfilter.samtools_utils import Samtools  # type: ignore
 except Exception:
     Samtools = None  # type: ignore
 
 try:
-    from PlantVarFilter.preanalysis.reference_manager import ReferenceManager  # type: ignore
+    from plantvarfilter.preanalysis.reference_manager import ReferenceManager  # type: ignore
 except Exception:
     ReferenceManager = None  # type: ignore
 

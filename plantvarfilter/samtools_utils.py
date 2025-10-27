@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
 try:
-    from PlantVarFilter.linux import resolve_tool
+    from plantvarfilter.linux import resolve_tool
 except Exception:
     resolve_tool = None
 

@@ -1,4 +1,4 @@
-# PlantVarFilter/preanalysis/fastq_qc.py
+# plantvarfilter/preanalysis/fastq_qc.py
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# PlantVarFilter/batch_gwas.py
+# plantvarfilter/batch_gwas.py
 import os
 import tempfile
 import pandas as pd

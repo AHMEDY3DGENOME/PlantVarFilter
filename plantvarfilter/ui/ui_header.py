@@ -1,6 +1,6 @@
 # ui/ui_header.py
 import dearpygui.dearpygui as dpg
-from PlantVarFilter.ui.ui_theme import hgroup, header_palette
+from plantvarfilter.ui.ui_theme import hgroup, header_palette
 import os
 
 def _build_header(self, parent, big: bool = False):
@@ -19,7 +19,7 @@ def _build_header(self, parent, big: bool = False):
                             color=(76, 175, 110, 255), thickness=2, parent=dl)
 
         # العنوان
-        title = dpg.add_text("PlantVarFilter",
+        title = dpg.add_text("plantvarfilter",
              color=(210, 230, 210) if self.night_mode else (30, 45, 35),
              default_font=self._font_title)
 

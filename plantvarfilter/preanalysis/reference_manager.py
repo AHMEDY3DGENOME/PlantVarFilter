@@ -1,4 +1,4 @@
-# PlantVarFilter/preanalysis/reference_manager.py
+# plantvarfilter/preanalysis/reference_manager.py
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Dict, Optional
 
 # Prefer the project's resolver if available
 try:
-    from PlantVarFilter.variant_caller_utils import resolve_tool  # type: ignore
+    from plantvarfilter.variant_caller_utils import resolve_tool  # type: ignore
 except Exception:
     resolve_tool = shutil.which  # fallback
 

@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple, Callable, Union, Dict
 from bcftools_utils import BCFtools
 
 try:
-    from PlantVarFilter.linux import resolve_tool
+    from plantvarfilter.linux import resolve_tool
 except Exception:
     resolve_tool = None
 
