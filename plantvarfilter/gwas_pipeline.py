@@ -22,7 +22,7 @@ from pysnptools.util import log_in_place
 import geneview as gv
 import gzip
 from bisect import bisect_left
-from PlantVarFilter.helpers import HELPERS
+from plantvarfilter.helpers import HELPERS
 
 plt.switch_backend('Agg')
 

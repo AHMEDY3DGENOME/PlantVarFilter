@@ -11,15 +11,15 @@ except Exception:
     logger = None
 
 from vcf_quality import VCFQualityChecker
-from PlantVarFilter.gwas_pipeline import GWAS
-from PlantVarFilter.genomic_prediction_pipeline import GenomicPrediction
-from PlantVarFilter.helpers import HELPERS
-from PlantVarFilter.pipeline_plots import Plot
+from plantvarfilter.gwas_pipeline import GWAS
+from plantvarfilter.genomic_prediction_pipeline import GenomicPrediction
+from plantvarfilter.helpers import HELPERS
+from plantvarfilter.pipeline_plots import Plot
 from pysnptools.snpreader import Bed, Pheno
 import pysnptools.util as pstutil
 from bcftools_utils import BCFtools, BCFtoolsError
 from samtools_utils import Samtools, SamtoolsError
-from PlantVarFilter.batch_gwas import run_batch_gwas_for_all_traits
+from plantvarfilter.batch_gwas import run_batch_gwas_for_all_traits
 from ui.ui_pages import build_pages
 from annotation_utils import Annotator
 
@@ -29,7 +29,7 @@ except Exception:
     VariantCaller = None
 
 try:
-    from PlantVarFilter.linux import resolve_tool
+    from plantvarfilter.linux import resolve_tool
 except Exception:
     def resolve_tool(name: str) -> str:
         return shutil.which(name) or name
@@ -566,7 +566,7 @@ class GWASApp:
                                 radius=18 if not big else 24,
                                 color=(76, 175, 110, 255), thickness=2, parent=dl)
 
-            dpg.add_text("PlantVarFilter", color=(210, 230, 210) if self.night_mode else (30, 45, 35))
+            dpg.add_text("plantvarfilter", color=(210, 230, 210) if self.night_mode else (30, 45, 35))
             if big:
                 dpg.add_spacer(width=10)
                 dpg.add_text("", color=(220, 200, 120) if self.night_mode else (40, 90, 40))
@@ -930,7 +930,7 @@ class GWASApp:
         dpg.create_context()
         try:
             self.setup_gui()
-            dpg.create_viewport(title="PlantVarFilter", width=1600, height=1000, resizable=True)
+            dpg.create_viewport(title="plantvarfilter", width=1600, height=1000, resizable=True)
             dpg.setup_dearpygui()
             dpg.show_viewport()
             self._refresh_watermark()

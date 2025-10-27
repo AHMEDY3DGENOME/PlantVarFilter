@@ -1,6 +1,6 @@
 # ui/ui_components.py
 import dearpygui.dearpygui as dpg
-from PlantVarFilter.ui.ui_theme import hgroup, tooltip, COLOR_NOTE
+from plantvarfilter.ui.ui_theme import hgroup, tooltip, COLOR_NOTE
 
 def path_chip_area(tag_group, initial="No file"):
     dpg.add_group(tag=tag_group)
@@ -18,7 +18,7 @@ def primary_button(label, callback, tag=None, enabled=True, width=280, height=40
     return dpg.add_button(label=label, callback=callback, tag=tag,
                           width=width, height=height, enabled=enabled)
 
-def toolbar(title="PlantVarFilter", tagline="GWAS & Variant Toolkit"):
+def toolbar(title="plantvarfilter", tagline="GWAS & Variant Toolkit"):
     with hgroup(8):
         dpg.add_text(title, tag="brand_title_toolbar")
         tg = dpg.add_text(tagline, tag="brand_tagline_toolbar")

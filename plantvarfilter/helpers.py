@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 try:
-    from PlantVarFilter.linux import resolve_tool as _resolve_tool
+    from plantvarfilter.linux import resolve_tool as _resolve_tool
 except Exception:
     _resolve_tool = None
 

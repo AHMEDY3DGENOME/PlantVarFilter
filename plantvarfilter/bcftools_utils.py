@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from typing import Optional, Tuple, List, Callable, Dict
 
-from PlantVarFilter.linux import resolve_tool
+from plantvarfilter.linux import resolve_tool
 
 LogFn = Callable[[str], None]
 
@@ -44,7 +44,7 @@ class BCFtools:
             raise BCFtoolsError(
                 "Missing binaries: "
                 + ", ".join(missing)
-                + ". Bundle them under PlantVarFilter/linux or install them in PATH."
+                + ". Bundle them under plantvarfilter/linux or install them in PATH."
             )
         self._emit(log, f"bcftools: {self.bcftools}")
         self._emit(log, f"bgzip   : {self.bgzip}")

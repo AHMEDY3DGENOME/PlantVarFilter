@@ -7,7 +7,7 @@ import subprocess
 from typing import Optional, Tuple, List, Dict
 
 try:
-    from PlantVarFilter.linux import resolve_tool
+    from plantvarfilter.linux import resolve_tool
 except Exception:
     from shutil import which as _which
     def resolve_tool(name: str) -> str:

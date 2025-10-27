@@ -1,4 +1,4 @@
-from PlantVarFilter.helpers import HELPERS
+from plantvarfilter.helpers import HELPERS
 from sklearn.linear_model import Ridge
 from pysnptools.snpreader import Bed, Pheno
 import time

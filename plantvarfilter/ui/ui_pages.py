@@ -8,7 +8,7 @@ import subprocess
 import dearpygui.dearpygui as dpg
 
 try:
-    from PlantVarFilter.preanalysis import (
+    from plantvarfilter.preanalysis import (
         ReferenceManager, ReferenceIndexStatus,
         run_fastq_qc, FastqQCReport,
         Aligner, AlignmentResult,

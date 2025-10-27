@@ -1,4 +1,4 @@
-# PlantVarFilter/linux/__init__.py
+# plantvarfilter/linux/__init__.py
 from pathlib import Path
 import os, stat
 from shutil import which
@@ -13,7 +13,7 @@ def _ensure_exec(p: Path):
         pass
 
 def resolve_tool(name: str) -> str | None:
-    """Prefer bundled binary in PlantVarFilter/linux/<name>, else fall back to PATH."""
+    """Prefer bundled binary in plantvarfilter/linux/<name>, else fall back to PATH."""
     candidate = BIN_DIR / name
     if candidate.exists():
         _ensure_exec(candidate)
