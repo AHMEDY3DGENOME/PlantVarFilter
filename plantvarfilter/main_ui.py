@@ -5,36 +5,80 @@ import subprocess
 import time
 import dearpygui.dearpygui as dpg
 
+# dearpygui-ext is optional; keep the GUI working even if it's missing.
 try:
-    from dearpygui_ext import logger
+    from dearpygui_ext import logger  # type: ignore
 except Exception:
     logger = None
 
-from vcf_quality import VCFQualityChecker
-from plantvarfilter.gwas_pipeline import GWAS
-from plantvarfilter.genomic_prediction_pipeline import GenomicPrediction
-from plantvarfilter.helpers import HELPERS
-from plantvarfilter.pipeline_plots import Plot
-from pysnptools.snpreader import Bed, Pheno
-import pysnptools.util as pstutil
-from bcftools_utils import BCFtools, BCFtoolsError
-from samtools_utils import Samtools, SamtoolsError
-from plantvarfilter.batch_gwas import run_batch_gwas_for_all_traits
-from ui.ui_pages import build_pages
-from annotation_utils import Annotator
+# ----------------------------
+# Internal imports (USE RELATIVE IMPORTS INSIDE THE PACKAGE)
+# ----------------------------
 
+# VCF quality checker (make sure plantvarfilter/vcf_quality.py exists).
+from .vcf_quality import VCFQualityChecker
+
+# Core pipelines and utilities (all relative to the package root).
+from .gwas_pipeline import GWAS
+from .genomic_prediction_pipeline import GenomicPrediction
+from .helpers import HELPERS
+from .pipeline_plots import Plot
+
+# pysnptools may not be available on all Py3.12 envs; keep the GUI booting anyway.
 try:
-    from variant_caller_utils import VariantCaller, VariantCallerError
+    from pysnptools.snpreader import Bed, Pheno  # type: ignore
+    import pysnptools.util as pstutil  # type: ignore
+except Exception:
+    Bed = None
+    Pheno = None
+    pstutil = None
+
+from .bcftools_utils import BCFtools, BCFtoolsError
+from .samtools_utils import Samtools, SamtoolsError
+from .batch_gwas import run_batch_gwas_for_all_traits
+from .annotation_utils import Annotator
+
+# Variant calling is optional; don't block GUI if module is missing.
+try:
+    from .variant_caller_utils import VariantCaller, VariantCallerError  # type: ignore
 except Exception:
     VariantCaller = None
+    VariantCallerError = None
+
+# Cross-platform resolve_tool():
+# Prefer PATH (conda/bioconda tools). Fall back to platform helpers if present.
+try:
+    from .linux import resolve_tool as _resolve_tool_linux  # type: ignore
+except Exception:
+    _resolve_tool_linux = None
 
 try:
-    from plantvarfilter.linux import resolve_tool
+    from .windows import resolve_tool as _resolve_tool_windows  # type: ignore
 except Exception:
-    def resolve_tool(name: str) -> str:
-        return shutil.which(name) or name
+    _resolve_tool_windows = None
 
-from ui.ui_theme import (
+def resolve_tool(name: str) -> str:
+    """
+    Resolve executable path. Prefer system/conda PATH; otherwise try platform-specific helpers.
+    Return the name itself if nothing found, so callers can still attempt to run it.
+    """
+    p = shutil.which(name)
+    if p:
+        return p
+    if _resolve_tool_linux:
+        try:
+            return _resolve_tool_linux(name)
+        except Exception:
+            pass
+    if _resolve_tool_windows:
+        try:
+            return _resolve_tool_windows(name)
+        except Exception:
+            pass
+    return name
+
+# GUI theming & pages (relative imports from the ui/ package)
+from .ui.ui_theme import (
     setup_app_chrome,
     build_dark_theme,
     build_light_theme,
@@ -42,11 +86,10 @@ from ui.ui_theme import (
     apply_theme,
     set_font_scale,
     set_accent_color,
-    get_primary_button_theme_tag
+    get_primary_button_theme_tag,
 )
 
-from ui.ui_pages import build_pages
-
+from .ui.ui_pages import build_pages  # (remove duplicate import if existed)
 
 class GWASApp:
     def __init__(self):
@@ -962,7 +1005,7 @@ class GWASApp:
             if not dpg.does_item_exist("content_area"):
                 return
 
-            from ui.watermark import setup as setup_watermark, place_signature as setup_lab_signature
+            from .ui.watermark import setup as setup_watermark, place_signature as setup_lab_signature
 
             def _place():
                 try:
