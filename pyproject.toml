@@ -1,82 +1,40 @@
-# pyproject.toml
-# This file configures packaging/build for the project using Poetry.
-# It also defines console scripts so users can launch the GUI with `plantvarfilter`.
+[build-system]
+requires = ["setuptools>=70.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
-[tool.poetry]
-# Package/distribution name (lowercase is conventional on Python package indexes).
+[project]
 name = "plantvarfilter"
-
-# Bump as you publish new releases (semantic versioning recommended).
-version = "0.2.0"
-
-# Short description for package indexes and installers.
-description = "Full GWAS software combining traditional statistical models with AI models, including a GUI."
-
-# Author metadata (not used at runtime).
-authors = ["Ahmed Yassin - Computational Biologist and Falak Sher Khan, PhD <ahmedyassin300@outlook.com>"]
-
-# README is shown on package indexes; keep it in the project root.
+version = "1.0.0"
+description = "Integrated GWAS and genomic prediction pipeline with a GUI for plant genomics."
 readme = "README.md"
+authors = [
+    { name = "Ahmed Yassin", email = "ahmedyassin300@outlook.com" },
+    { name = "Falak Sher Khan", email = "falak.khan@pku.edu.cn" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["GWAS", "genomics", "plants", "bioinformatics", "variant-calling", "machine-learning"]
 
-# Explicitly include the Python package directory.
-# If your code lives under ./plantvarfilter/, this ensures Poetry finds it.
-packages = [{ include = "plantvarfilter" }]
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "scipy>=1.11",
+    "matplotlib>=3.7",
+    "scikit-learn>=1.3",
+    "dearpygui>=1.11"
+]
 
-[tool.poetry.dependencies]
-# Target Python range: supports Python 3.10–3.12 (inclusive of 3.12).
-# If any dependency does not yet support 3.12, we can move it to [tool.poetry.extras] as optional.
-python = ">=3.10,<3.13"
-
-# ---- Core scientific stack (versions chosen to be Py3.12-friendly) ----
-# Pinning lower bounds helps avoid ABI conflicts and ensures Py3.12 compatibility.
-numpy = ">=1.26"
-pandas = ">=2.0"
-scipy = ">=1.11"
-matplotlib = ">=3.7"
-
-# ---- Machine Learning ----
-# scikit-learn supports Py3.12 in recent versions.
-scikit-learn = ">=1.3"
-
-# xgboost supports Py3.12 (>=2.0). Marked as optional so users without GPUs or
-# strict environments can still install the GUI/CLI without it.
-xgboost = { version = ">=2.0", optional = true }
-
-# ---- GWAS/Genetics libraries ----
-# Some genomics libs lag behind for latest Python versions.
-# We mark them optional; users can install the "gwas" extra (or use conda packages).
-# For fastlmm: restrict to <3.12 to avoid install issues on Py3.12 wheels.
-fastlmm = { version = "*", python = "<3.12", optional = true }
-pysnptools = { version = "*", optional = true }
-geneview = { version = "*", optional = true }
-
-# ---- GUI ----
-# Dear PyGUI provides the desktop interface. Newer versions support Python 3.12.
-dearpygui = ">=1.11"
-
-# If you actually use dearpygui-ext in code, uncomment the next line.
-# dearpygui-ext = "*"
-
-[tool.poetry.extras]
-# Optional dependency groups users can opt-in to:
-#   poetry install -E ml
-#   poetry install -E gwas
-#   poetry install -E all
-ml = ["xgboost", "scikit-learn"]
+[project.optional-dependencies]
+ml = ["xgboost>=2.0"]
 gwas = ["fastlmm", "pysnptools", "geneview"]
-all = ["xgboost", "scikit-learn", "fastlmm", "pysnptools", "geneview"]
+all = ["xgboost>=2.0", "fastlmm", "pysnptools", "geneview"]
 
-[tool.poetry.scripts]
-# Console scripts (entry points):
-# After installation, users can run `plantvarfilter` to launch the GUI.
+[project.scripts]
 plantvarfilter = "plantvarfilter.main_ui:main"
-
-# CLI entry points (only if you define corresponding cli() functions):
-# Users can run `pvf-gwas --help` or `pvf-batch-gwas --help` in the terminal.
 pvf-gwas = "plantvarfilter.gwas_pipeline:cli"
 pvf-batch-gwas = "plantvarfilter.batch_gwas:cli"
 
-[build-system]
-# Poetry build configuration. Keep poetry-core up-to-date for Py3.12 support.
-requires = ["poetry-core>=1.9.0"]
-build-backend = "poetry.core.masonry.api"
+[project.urls]
+Homepage = "https://github.com/AHMEDY3DGENOME/PlantVarFilter"
+Documentation = "https://github.com/AHMEDY3DGENOME/PlantVarFilter/wiki"
+"Issue Tracker" = "https://github.com/AHMEDY3DGENOME/PlantVarFilter/issues"
