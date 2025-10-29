@@ -16,7 +16,10 @@ except Exception:
 # ----------------------------
 
 # VCF quality checker (make sure plantvarfilter/vcf_quality.py exists).
-from .vcf_quality import VCFQualityChecker
+try:
+    from .vcf_quality import VCFQualityChecker
+except ImportError:
+    from plantvarfilter.vcf_quality import VCFQualityChecker
 
 # Core pipelines and utilities (all relative to the package root).
 from .gwas_pipeline import GWAS
