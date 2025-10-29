@@ -154,7 +154,7 @@ If you use PlantVarFilter in your research, please cite the following paper:
 
 ## 11. Authors and Acknowledgment
 **Developed by:**  
-Ahmed Yassin and Falak Sher Khan  
+Ahmed Yassin, Computational Biologist and Falak Sher Khan, Post doc 
 Ye-Lab, Institute of Advanced Agricultural Sciences (IAAS), Peking University  
 
 The authors gratefully acknowledge the computational resources provided by Ye-Lab and the continued guidance in genomic data processing and AI-based phenotypic prediction.
@@ -175,25 +175,21 @@ Planned updates include:
 The figure below demonstrates the unified Dear PyGui interface of PlantVarFilter,
 organized by analytical stages (Reference → QC → Alignment → VCF → GWAS → Prediction).
 
-![PlantVarFilter GUI Layout](plantvarfilter/assets/gui_overview.png)
-
+![PlantVarFilter GUI Layout](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/plantvarfilter/assets/gui_overview.png)
 ## 15. Experimental Evaluation (FaST-LMM)
 
 **Run ID:** `07092025_154023_FaST-LMM`  
 This experiment was executed on a crop dataset (~5M SNPs × 150 samples) using the FaST-LMM model integrated within PlantVarFilter.
 
 **Artifacts:**  
-- [`gwas_results.csv`](docs/results/07092025_154023_FaST-LMM/gwas_results.csv)  
-- [`gwas_results_top10000.csv`](docs/results/07092025_154023_FaST-LMM/gwas_results_top10000.csv)  
-- [`log.txt`](docs/results/07092025_154023_FaST-LMM/log.txt)
-
+- [`gwas_results.csv`](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/docs/results/07092025_154023_FaST-LMM/gwas_results.csv)
+- [`gwas_results_top10000.csv`](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/docs/results/07092025_154023_FaST-LMM/gwas_results_top10000.csv)
+- [`log.txt`](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/docs/results/07092025_154023_FaST-LMM/log.txt)
 **Plots:**  
 Genome-wide Manhattan and QQ plots illustrating the significance distribution of SNP associations:
 
-![Manhattan Plot](docs/results/07092025_154023_FaST-LMM/manhatten_plot_high.png?raw=true)
-
-![QQ Plot](docs/results/07092025_154023_FaST-LMM/qq_plot_high.png?raw=true)
-
+![Manhattan Plot](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/docs/results/07092025_154023_FaST-LMM/manhatten_plot_high.png)
+![QQ Plot](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/docs/results/07092025_154023_FaST-LMM/qq_plot_high.png)
 **Summary of results:**
 - Ti/Tv ratio ≈ 2.04  
 - Mean read depth ≈ 18×  
