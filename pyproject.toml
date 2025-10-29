@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=70.0", "wheel"]
+requires = ["setuptools>=70.0", "wheel", "build"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,27 +7,26 @@ name = "plantvarfilter"
 version = "0.2.0"
 description = "Integrated GWAS and genomic prediction pipeline with a GUI for plant genomics."
 readme = "README.md"
-authors = [
-    { name = "Ahmed Yassin", email = "ahmedyassin300@outlook.com" },
-    { name = "Falak Sher Khan", email = "falak.khan@pku.edu.cn" }
-]
-license = { text = "MIT" }
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "Ahmed Yassin", email = "ahmedyassin300@outlook.com" },
+  { name = "Falak Sher Khan", email = "falak.khan@pku.edu.cn" }
+]
 keywords = ["GWAS", "genomics", "plants", "bioinformatics", "variant-calling", "machine-learning"]
-
 dependencies = [
-    "numpy>=1.26",
-    "pandas>=2.0",
-    "scipy>=1.11",
-    "matplotlib>=3.7",
-    "scikit-learn>=1.3",
-    "dearpygui>=1.11"
+  "numpy>=1.26",
+  "pandas>=2.0",
+  "scipy>=1.11",
+  "matplotlib>=3.7",
+  "scikit-learn>=1.3",
+  "dearpygui>=1.11"
 ]
 
 [project.optional-dependencies]
 ml = ["xgboost>=2.0"]
-gwas = ["fastlmm", "pysnptools", "geneview"]
-all = ["xgboost>=2.0", "fastlmm", "pysnptools", "geneview"]
+gwas = ["fastlmm; python_version < '3.12'", "pysnptools", "geneview"]
+all = ["xgboost>=2.0", "fastlmm; python_version < '3.12'", "pysnptools", "geneview"]
 
 [project.scripts]
 plantvarfilter = "plantvarfilter.main_ui:main"
@@ -38,3 +37,6 @@ pvf-batch-gwas = "plantvarfilter.batch_gwas:cli"
 Homepage = "https://github.com/AHMEDY3DGENOME/PlantVarFilter"
 Documentation = "https://github.com/AHMEDY3DGENOME/PlantVarFilter/wiki"
 "Issue Tracker" = "https://github.com/AHMEDY3DGENOME/PlantVarFilter/issues"
+
+[tool.setuptools.package-data]
+plantvarfilter = ["assets/**/*", "windows/*.ini"]
