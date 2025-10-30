@@ -175,21 +175,27 @@ Planned updates include:
 The figure below demonstrates the unified Dear PyGui interface of PlantVarFilter,
 organized by analytical stages (Reference → QC → Alignment → VCF → GWAS → Prediction).
 
-![PlantVarFilter GUI Layout](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/plantvarfilter/assets/gui_overview.png)
+![PlantVarFilter GUI Layout](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/gui_overview.png)
+
+
 ## 15. Experimental Evaluation (FaST-LMM)
 
 **Run ID:** `07092025_154023_FaST-LMM`  
 This experiment was executed on a crop dataset (~5M SNPs × 150 samples) using the FaST-LMM model integrated within PlantVarFilter.
 
 **Artifacts:**  
-- [`gwas_results.csv`](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/docs/results/07092025_154023_FaST-LMM/gwas_results.csv)
-- [`gwas_results_top10000.csv`](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/docs/results/07092025_154023_FaST-LMM/gwas_results_top10000.csv)
-- [`log.txt`](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/docs/results/07092025_154023_FaST-LMM/log.txt)
+- [GWAS results (CSV)](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/gwas_results.csv)
+- [Top 10k SNPs (CSV)](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/gwas_results_top10000.csv)
+- [Run Log (TXT)](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/log.txt)
+
+
 **Plots:**  
 Genome-wide Manhattan and QQ plots illustrating the significance distribution of SNP associations:
 
-![Manhattan Plot](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/docs/results/07092025_154023_FaST-LMM/manhatten_plot_high.png)
-![QQ Plot](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/v0.2.0/docs/results/07092025_154023_FaST-LMM/qq_plot_high.png)
+![Manhattan Plot](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/manhatten_plot_high.png)
+![QQ Plot](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/qq_plot_high.png)
+
+
 **Summary of results:**
 - Ti/Tv ratio ≈ 2.04  
 - Mean read depth ≈ 18×  

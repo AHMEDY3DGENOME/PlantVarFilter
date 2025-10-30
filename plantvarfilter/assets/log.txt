@@ -1,0 +1,7 @@
+Algorithm: FaST-LMM
+Bed file used: /home/ahmed/PycharmProjects/data test/merged_maf0.05_geno0.1.bed
+Pheno file used: /home/ahmed/PycharmProjects/data test/stomata density.txt
+Training size: 70.0
+Nr of trees: 200
+Nr of models: 1
+Max depth: 3
