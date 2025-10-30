@@ -4,16 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plantvarfilter"
-version = "0.2.1"
+version = "0.2.2"
 description = "Integrated GWAS and genomic prediction pipeline with a GUI for plant genomics."
-readme = "README.md"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-  { name = "Ahmed Yassin", email = "ahmedyassin300@outlook.com" },
-  { name = "Falak Sher Khan", email = "falak.khan@pku.edu.cn" }
+  { name = "Ahmed Yassin, Computational Biologist", email = "ahmedyassin300@outlook.com" },
+  { name = "Falak Sher Khan, Post-doctoral scientist", email = "falak.khan@pku.edu.cn" }
 ]
 keywords = ["GWAS", "genomics", "plants", "bioinformatics", "variant-calling", "machine-learning"]
+
 dependencies = [
   "numpy>=1.26",
   "pandas>=2.0",
@@ -38,5 +39,15 @@ Homepage = "https://github.com/AHMEDY3DGENOME/PlantVarFilter"
 Documentation = "https://github.com/AHMEDY3DGENOME/PlantVarFilter/wiki"
 "Issue Tracker" = "https://github.com/AHMEDY3DGENOME/PlantVarFilter/issues"
 
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["plantvarfilter*"]
+
 [tool.setuptools.package-data]
-plantvarfilter = ["assets/**/*", "windows/*.ini"]
+plantvarfilter = [
+  "assets/**/*",
+  "windows/*.ini"
+]
