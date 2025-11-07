@@ -1,12 +1,12 @@
 # PlantVarFilter: An Integrated GWAS and Genomic Prediction Pipeline for Plant Genomes
 
 ## Quick Install (Windows)
-```powershell
-mamba create -n pvf -c conda-forge -c bioconda python=3.11 samtools bcftools bowtie2 minimap2 plink
-mamba activate pvf
-pip install plantvarfilter
-plantvarfilter
-```
+# Windows Compatibility Notice: 
+PlantVarFilter can be installed and partially executed on Windows systems; however, full functionality is not available on native Windows. This limitation arises because several core components of the pipeline—such as samtools, bcftools, bowtie2, minimap2, and plink—are Linux-native bioinformatics tools that lack stable Win-64 conda distributions or official binaries compatible with the package’s automated workflow.
+While the graphical interface and Python-based analytical modules (e.g., quality control visualization, machine learning prediction, and GWAS result rendering) run normally on Windows, stages involving sequence alignment, variant calling, and large-scale GWAS computations require a POSIX-compatible environment.
+
+```For complete functionality, users are strongly encouraged to run PlantVarFilter under Linux (desktop or server) or within WSL2 + Ubuntu on Windows```.
+
 ---
 
 ## Abstract
@@ -90,30 +90,7 @@ Benchmarked on real crop datasets (e.g., wheat and rice), the system demonstrate
 The modular architecture allows execution in local desktop environments or high-performance computing clusters.  
 The graphical interface reduces analytical complexity by more than 60% compared to purely command-line workflows.
 
-## 8. Installation on Windows
-### Recommended Installation (Windows)
-
-PlantVarFilter is best installed using **Miniforge** (a lightweight Conda distribution for Windows).
-
-1. Download the Windows installer: [Miniforge3-Windows-x86_64.exe](https://conda-forge.org/miniforge/)
-2. Run it and open the new **"Miniforge Prompt"** from the Start menu.
-3. Create an isolated environment:
-   ```powershell
-   mamba create -n pvf -c conda-forge -c bioconda python=3.11 samtools bcftools bowtie2 minimap2 plink
-   mamba activate pvf
-   ```
-4. Install PlantVarFilter:
-   ```powershell
-   pip install plantvarfilter
-   ```
-5. Launch the GUI:
-   ```powershell
-   plantvarfilter
-   ```
-
-💡 *This method works on Windows 10/11 (64-bit) without admin rights and keeps your system clean.*
-
-## 9. Installation on Linux
+## 8. Installation on Linux
 ### Recommended (Conda/Mamba on Linux)
 ```bash
 # 1) Install Miniforge/Mambaforge for Linux (x86_64/aarch64)
@@ -147,38 +124,38 @@ plantvarfilter
 samtools --version && bcftools --version && bowtie2 --version && minimap2 --version && plink --version
 ```
 
-## 10. Citation
+## 9. Citation
 If you use PlantVarFilter in your research, please cite the following paper:
 
 > Yassin, A., & Khan, F. S. (2025). *PlantVarFilter: A lightweight variant filtering and analysis toolkit for plant genomes.* bioRxiv. https://doi.org/10.1101/2025.07.02.662805
 
-## 11. Authors and Acknowledgment
+## 10. Authors and Acknowledgment
 **Developed by:**  
 Ahmed Yassin, Computational Biologist and Falak Sher Khan, Post doc 
 Ye-Lab, Institute of Advanced Agricultural Sciences (IAAS), Peking University  
 
 The authors gratefully acknowledge the computational resources provided by Ye-Lab and the continued guidance in genomic data processing and AI-based phenotypic prediction.
 
-## 12. License and Availability
+## 11. License and Availability
 PlantVarFilter is released under the MIT License.  
 Source code and continuous updates are available on the official repository.  
 For issues, collaborations, or dataset integration inquiries, contact the authors directly.
 
-## 13. Future Directions
+## 12. Future Directions
 Planned updates include:
 - Expansion toward pan-genomic variant aggregation.  
 - Support for transcriptome-derived SNP integration.  
 - Enhanced visualization engine using WebGPU for real-time rendering.  
 - Cloud-ready version for distributed plant GWAS datasets.
 
-## 14. Graphical User Interface
+## 13. Graphical User Interface
 The figure below demonstrates the unified Dear PyGui interface of PlantVarFilter,
 organized by analytical stages (Reference → QC → Alignment → VCF → GWAS → Prediction).
 
 ![PlantVarFilter GUI Layout](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/gui_overview.png)
 
 
-## 15. Experimental Evaluation (FaST-LMM)
+## 14. Experimental Evaluation (FaST-LMM)
 
 **Run ID:** `07092025_154023_FaST-LMM`  
 This experiment was executed on a crop dataset (~5M SNPs × 150 samples) using the FaST-LMM model integrated within PlantVarFilter.
