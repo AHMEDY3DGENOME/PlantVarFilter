@@ -6,7 +6,24 @@ PlantVarFilter can be installed and partially executed on Windows systems; howev
 While the graphical interface and Python-based analytical modules (e.g., quality control visualization, machine learning prediction, and GWAS result rendering) run normally on Windows, stages involving sequence alignment, variant calling, and large-scale GWAS computations require a POSIX-compatible environment.
 
 ```For complete functionality, users are strongly encouraged to run PlantVarFilter under Linux (desktop or server) or within WSL2 + Ubuntu on Windows```.
-
+## You can the package on windows with the WSL, Follow this Commands: 
+# 1. Open windows powershell and install ubuntu wsl
+``wsl --install -d Ubuntu
+``
+2. then restart your windows operation and use this
+``wsl --set-default-version 2
+``
+3. upgrade Wsl: ``sudo apt update && sudo apt -y upgrade``
+4. install wget: ``sudo apt install -y wget``
+5. install miniFrog: ``wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O miniforge.sh
+bash miniforge.sh -b``
+6. activate: ``source ~/miniforge3/bin/activate``
+7. create conda env: ``mamba create -n pvf -c conda-forge -c bioconda \
+  python=3.11 samtools bcftools bowtie2 minimap2 plink -y``
+8. activate PVF (plantvarfilter env): ``mamba activate pvf``
+9. install plantvarfilter: ``pip install --upgrade pip`` && ``pip install plantvarfilter``
+10. the call package to work: ``plantvarfilter
+``
 ---
 
 ## Abstract
