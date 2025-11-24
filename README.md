@@ -1,30 +1,5 @@
 # PlantVarFilter: An Integrated GWAS and Genomic Prediction Pipeline for Plant Genomes
 
-## Quick Install (Windows)
-# Windows Compatibility Notice: 
-PlantVarFilter can be installed and partially executed on Windows systems; however, full functionality is not available on native Windows. This limitation arises because several core components of the pipeline—such as samtools, bcftools, bowtie2, minimap2, and plink—are Linux-native bioinformatics tools that lack stable Win-64 conda distributions or official binaries compatible with the package’s automated workflow.
-While the graphical interface and Python-based analytical modules (e.g., quality control visualization, machine learning prediction, and GWAS result rendering) run normally on Windows, stages involving sequence alignment, variant calling, and large-scale GWAS computations require a POSIX-compatible environment.
-
-```For complete functionality, users are strongly encouraged to run PlantVarFilter under Linux (desktop or server) or within WSL2 + Ubuntu on Windows```.
-## You can the package on windows with the WSL, Follow this Commands: 
-# 1. Open windows powershell and install ubuntu wsl
-``wsl --install -d Ubuntu
-``
-2. then restart your windows operation and use this
-``wsl --set-default-version 2
-``
-3. upgrade Wsl: ``sudo apt update && sudo apt -y upgrade``
-4. install wget: ``sudo apt install -y wget``
-5. install miniFrog: ``wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O miniforge.sh
-bash miniforge.sh -b``
-6. activate: ``source ~/miniforge3/bin/activate``
-7. create conda env: ``mamba create -n pvf -c conda-forge -c bioconda \
-  python=3.11 samtools bcftools bowtie2 minimap2 plink -y``
-8. activate PVF (plantvarfilter env): ``mamba activate pvf``
-9. install plantvarfilter: ``pip install --upgrade pip`` && ``pip install plantvarfilter``
-10. the call package to work: ``plantvarfilter
-``
----
 
 ## Abstract
 PlantVarFilter represents the second-generation release of a previously lightweight Python toolkit, now evolved into a fully modular and GUI-based genomic analysis pipeline designed for large-scale plant genomics. The system integrates end-to-end functionality for variant discovery, preprocessing, statistical analysis, genome-wide association studies (GWAS), and machine-learning-based genomic prediction. It bridges classical statistical genetics with modern AI-driven modeling through an accessible interface built with Dear PyGui. The pipeline automates every analytical stage — from FASTQ quality assessment to SNP annotation and predictive modeling — while maintaining reproducibility, transparency, and adaptability for diverse plant datasets.
@@ -109,37 +84,66 @@ The graphical interface reduces analytical complexity by more than 60% compared 
 
 ## 8. Installation on Linux
 ### Recommended (Conda/Mamba on Linux)
-```bash
-# 1) Install Miniforge/Mambaforge for Linux (x86_64/aarch64)
-#    https://conda-forge.org/miniforge/
-# 2) Create a clean environment with external tools
-mamba create -n pvf -c conda-forge -c bioconda   python=3.11 samtools bcftools bowtie2 minimap2 plink
+### Follow the steps to install the pieplone in Ubuntu, First, an internet connection is required to install the necessary libraries.
+1. open ubuntu terminal and update your device package and upgrade: 
+```commandline
+sudo apt update && sudo apt upgrade -y
+```
+![updates ubuntu package](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/1.png) 
+
+2. Install the minifrog version from conda by these commands: pull the conda from the GitHub repository
+```commandline
+wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh” 
+
+```
+![get mimi frog-conda](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/2.png) 
+
+3. installing mamba package
+```commandline
+bash Miniforge3-Linux-x86_64.sh
+
+note: press Enter, then yes to complete installing package in the wright location
+```
+![install conda package](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/3.png) 
+
+4. open source to install environment
+```commandline
+Source  ~/.bashrc
+```
+![open env source](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/1.png) 
+
+5. Create the plantvarfilter environment to install
+```commandline
+mamba create -n pvf -c conda-forge -c bioconda python=3.11 samtools bcftools bowtie2 minimap2 plink
+```
+![create mamba and plink tools](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/5.png) 
+
+6. Activate piepline environment: 
+```commandline
 mamba activate pvf
+```
+![activate pvf](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/6.png) 
 
-# 3) Install PlantVarFilter
+7. install piepline package: 
+```commandline
 pip install plantvarfilter
-
-# 4) Run the GUI
-plantvarfilter
-# or: python -m plantvarfilter.main_ui
 ```
+![install piepline](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/7.png) 
 
-### Alternative (system packages, Ubuntu/Debian)
-> Prefer Conda for consistent versions. If you must use system packages:
-```bash
-sudo apt-get update
-sudo apt-get install -y python3-pip python3-venv   samtools bcftools bowtie2 minimap2
-# (Install PLINK manually if not available or use conda)
-python3 -m venv pvf-venv && source pvf-venv/bin/activate
-pip install --upgrade pip
-pip install plantvarfilter
+8. install fastlmm Algorithm, geneview and xgboost
+```commandline
+pip install fastlmm
+pip install geneview
+pip install xgboost
+```
+![install dep package](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/8.png) 
+
+9. open piepline GUI to start work 
+```commandline
 plantvarfilter
 ```
+![open gui piepline](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/9.png) 
 
-### Verify external tools
-```bash
-samtools --version && bcftools --version && bowtie2 --version && minimap2 --version && plink --version
-```
 
 ## 9. Citation
 If you use PlantVarFilter in your research, please cite the following paper:
