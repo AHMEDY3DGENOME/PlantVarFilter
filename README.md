@@ -96,7 +96,7 @@ sudo apt update && sudo apt upgrade -y
 wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh” 
 
 ```
-![get mimi frog-conda](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/2.png) 
+![get mimi frog-conda](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/2.png) 
 
 3. installing mamba package
 ```commandline
@@ -104,31 +104,31 @@ bash Miniforge3-Linux-x86_64.sh
 
 note: press Enter, then yes to complete installing package in the wright location
 ```
-![install conda package](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/3.png) 
+![install conda package](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/3.png) 
 
 4. open source to install environment
 ```commandline
 Source  ~/.bashrc
 ```
-![open env source](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/1.png) 
+![open env source](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/1.png) 
 
 5. Create the plantvarfilter environment to install
 ```commandline
 mamba create -n pvf -c conda-forge -c bioconda python=3.11 samtools bcftools bowtie2 minimap2 plink
 ```
-![create mamba and plink tools](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/5.png) 
+![create mamba and plink tools](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/5.png) 
 
 6. Activate piepline environment: 
 ```commandline
 mamba activate pvf
 ```
-![activate pvf](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/6.png) 
+![activate pvf](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/6.png) 
 
 7. install piepline package: 
 ```commandline
 pip install plantvarfilter
 ```
-![install piepline](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/7.png) 
+![install piepline](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/7.png) 
 
 8. install fastlmm Algorithm, geneview and xgboost
 ```commandline
@@ -136,13 +136,13 @@ pip install fastlmm
 pip install geneview
 pip install xgboost
 ```
-![install dep package](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/8.png) 
+![install dep package](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/8.png) 
 
 9. open piepline GUI to start work 
 ```commandline
 plantvarfilter
 ```
-![open gui piepline](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/9.png) 
+![open gui piepline](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/9.png) 
 
 
 ## 9. Citation
