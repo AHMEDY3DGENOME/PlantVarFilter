@@ -143,11 +143,7 @@ pip install xgboost
 plantvarfilter
 ```
 ![open gui piepline](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/9.png) 
-
-### The Piepline UI
-![open ui piepline](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/ui.png) 
-
-
+![open gui piepline](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/10.png) 
 
 ## 9. Citation
 If you use PlantVarFilter in your research, please cite the following paper:
