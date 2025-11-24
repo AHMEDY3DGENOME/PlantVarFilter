@@ -89,7 +89,7 @@ The graphical interface reduces analytical complexity by more than 60% compared 
 ```commandline
 sudo apt update && sudo apt upgrade -y
 ```
-![updates ubuntu package](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/fonts/1.png) 
+![Update Ubuntu Package](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/1.png)
 
 2. Install the minifrog version from conda by these commands: pull the conda from the GitHub repository
 ```commandline
