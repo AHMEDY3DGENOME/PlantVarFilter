@@ -110,7 +110,7 @@ note: press Enter, then yes to complete installing package in the wright locatio
 ```commandline
 Source  ~/.bashrc
 ```
-![open env source](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/1.png) 
+![open env source](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/4.png) 
 
 5. Create the plantvarfilter environment to install
 ```commandline
