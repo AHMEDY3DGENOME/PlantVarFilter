@@ -5,12 +5,19 @@ import subprocess
 import tempfile
 from typing import List, Optional, Tuple, Callable, Union, Dict
 
-from bcftools_utils import BCFtools
+try:
+    from .bcftools_utils import BCFtools
+except ImportError:
+    from bcftools_utils import BCFtools
 
 try:
-    from plantvarfilter.linux import resolve_tool
+    from .linux import resolve_tool
 except Exception:
-    resolve_tool = None
+    try:
+        from plantvarfilter.linux import resolve_tool
+    except Exception:
+        resolve_tool = None
+
 
 LogFn = Callable[[str], None]
 

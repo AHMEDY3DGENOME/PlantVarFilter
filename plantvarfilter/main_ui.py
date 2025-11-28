@@ -4,12 +4,14 @@ import shutil
 import subprocess
 import time
 import dearpygui.dearpygui as dpg
+import sys
 
 # dearpygui-ext is optional; keep the GUI working even if it's missing.
 try:
     from dearpygui_ext import logger  # type: ignore
 except Exception:
     logger = None
+
 
 # ----------------------------
 # Internal imports (USE RELATIVE IMPORTS INSIDE THE PACKAGE)
@@ -41,6 +43,8 @@ from .samtools_utils import Samtools, SamtoolsError
 from .batch_gwas import run_batch_gwas_for_all_traits
 from .annotation_utils import Annotator
 
+
+
 # Variant calling is optional; don't block GUI if module is missing.
 try:
     from .variant_caller_utils import VariantCaller, VariantCallerError  # type: ignore
@@ -59,6 +63,8 @@ try:
     from .windows import resolve_tool as _resolve_tool_windows  # type: ignore
 except Exception:
     _resolve_tool_windows = None
+
+
 
 def resolve_tool(name: str) -> str:
     """
@@ -283,34 +289,79 @@ class GWASApp:
                 self.add_log(f"[IMG] Failed to load image '{path}': {e}", error=True)
             return None
 
-    def ensure_log_window(self, show=True):
-        if not dpg.does_item_exist("LogWindow"):
-            with dpg.window(label="Log", tag="LogWindow", width=700, height=420, pos=(80, 80),
-                            no_saved_settings=False, modal=False, no_close=False):
+    def ensure_log_window(self, show: bool = True) -> None:
+        window_tag = "LogWindow"
+
+        if not dpg.does_item_exist(window_tag):
+            with dpg.window(
+                    label="Log",
+                    tag=window_tag,
+                    width=700,
+                    height=420,
+                    pos=(80, 80),
+                    no_saved_settings=False,
+                    modal=False,
+                    no_close=False,
+            ):
                 if logger:
-                    self.logz = logger.mvLogger(parent="LogWindow")
+                    self.logz = logger.mvLogger(parent=window_tag)
                 else:
-                    self._log_fallback_tag = dpg.add_input_text(multiline=True, readonly=True, width=-1, height=-1,
-                                                                tag="log_fallback_win")
+                    self._log_fallback_tag = dpg.add_input_text(
+                        multiline=True,
+                        readonly=True,
+                        width=-1,
+                        height=-1,
+                        tag="log_fallback_win",
+                    )
+
         if show:
-            dpg.show_item("LogWindow")
+            dpg.configure_item(window_tag, show=True)
+            try:
+                dpg.focus_item(window_tag)
+            except Exception:
+                pass
 
     def ensure_results_window(self, show=True, title="Results"):
-        if not dpg.does_item_exist("ResultsWindow"):
-            with dpg.window(label=title, tag="ResultsWindow", width=1100, height=700, pos=(300, 120),
-                            no_saved_settings=False, modal=False, no_close=False):
-                self._results_body = dpg.add_child_window(tag="results_body", autosize_x=True, autosize_y=True,
-                                                          border=False)
+        window_tag = "ResultsWindow"
+
+        if not dpg.does_item_exist(window_tag):
+            with dpg.window(
+                    label=title,
+                    tag=window_tag,
+                    width=1100,
+                    height=700,
+                    pos=(300, 120),
+                    no_saved_settings=False,
+                    modal=False,
+                    no_close=False,
+            ):
+                self._results_body = dpg.add_child_window(
+                    tag="results_body",
+                    autosize_x=True,
+                    autosize_y=True,
+                    border=False,
+                )
         else:
             if title:
-                dpg.configure_item("ResultsWindow", label=title)
+                dpg.configure_item(window_tag, label=title)
             if not dpg.does_item_exist("results_body"):
-                self._results_body = dpg.add_child_window(tag="results_body", autosize_x=True, autosize_y=True,
-                                                          border=False, parent="ResultsWindow")
+                self._results_body = dpg.add_child_window(
+                    tag="results_body",
+                    autosize_x=True,
+                    autosize_y=True,
+                    border=False,
+                    parent=window_tag,
+                )
             else:
                 self._results_body = "results_body"
+
         if show:
-            dpg.show_item("ResultsWindow")
+            dpg.show_item(window_tag)
+            # بعض نسخ DearPyGui لا تحتوي على bring_item_to_front
+            if hasattr(dpg, "bring_item_to_front"):
+                dpg.bring_item_to_front(window_tag)
+            elif hasattr(dpg, "focus_item"):
+                dpg.focus_item(window_tag)
 
     def setup_gui(self):
         setup_app_chrome(base_size=20)
@@ -641,10 +692,9 @@ class GWASApp:
         self._set_workspace_dir(os.path.dirname(input_for_ws))
 
         try:
-            from ld_utils import LDAnalyzer, LDAnalysisError
+            from plantvarfilter.ld_utils import LDAnalyzer, LDAnalysisError
         except Exception as e:
             self.add_log(f"[LD] Could not import ld_utils: {e}", error=True)
-            return
 
         analyzer = LDAnalyzer()
         base_name = os.path.splitext(os.path.basename(input_for_ws))[0]
@@ -818,12 +868,15 @@ class GWASApp:
             bfile_prefix = os.path.splitext(bed_path)[0]
 
         try:
-            npcs = int(dpg.get_value(self.pca_npcs)) if (self.pca_npcs and dpg.does_item_exist(self.pca_npcs)) else 10
+            npcs = int(dpg.get_value(self.pca_npcs)) if (
+                    self.pca_npcs and dpg.does_item_exist(self.pca_npcs)
+            ) else 10
         except Exception:
             npcs = 10
 
         do_kin = bool(dpg.get_value(self.pca_kinship)) if (
-                    self.pca_kinship and dpg.does_item_exist(self.pca_kinship)) else True
+                self.pca_kinship and dpg.does_item_exist(self.pca_kinship)
+        ) else True
 
         outpfx = ""
         if self.pca_out_prefix and dpg.does_item_exist(self.pca_out_prefix):
@@ -842,9 +895,20 @@ class GWASApp:
 
         try:
             if use_plink2:
-                cmd = [plink2, "--bfile", bfile_prefix, "--pca", str(npcs), "var-wts", "approx", "--out", outpfx]
+                cmd = [
+                    plink2,
+                    "--bfile",
+                    bfile_prefix,
+                    "--pca",
+                    str(npcs),
+                    "biallelic-var-wts",
+                    "approx",
+                    "--out",
+                    outpfx,
+                ]
             else:
                 cmd = [plink19, "--bfile", bfile_prefix, "--pca", str(npcs), "--out", outpfx]
+
             self._run_cmd(cmd)
 
             eigvec = f"{outpfx}.eigenvec"
@@ -855,60 +919,114 @@ class GWASApp:
 
             kin_out = None
             if do_kin:
-                if use_plink19:
-                    kin_out = outpfx + ".rel"
-                    cmd = [plink19, "--bfile", bfile_prefix, "--make-rel", "square", "--out", outpfx]
-                    self._run_cmd(cmd)
-                    if not os.path.exists(kin_out):
-                        if use_plink2:
-                            cmd = [plink2, "--bfile", bfile_prefix, "--make-rel", "square", "--out", outpfx]
-                            self._run_cmd(cmd)
-                            if not os.path.exists(kin_out) and os.path.exists(kin_out + ".gz"):
-                                kin_out = kin_out + ".gz"
-                        else:
-                            kin_out = None
-                else:
-                    kin_out = outpfx + ".rel"
+                kin_out = outpfx + ".rel"
+                if use_plink2:
                     cmd = [plink2, "--bfile", bfile_prefix, "--make-rel", "square", "--out", outpfx]
                     self._run_cmd(cmd)
                     if not os.path.exists(kin_out) and os.path.exists(kin_out + ".gz"):
                         kin_out = kin_out + ".gz"
+                elif use_plink19:
+                    cmd = [plink19, "--bfile", bfile_prefix, "--make-rel", "square", "--out", outpfx]
+                    self._run_cmd(cmd)
+                    if not os.path.exists(kin_out) and os.path.exists(kin_out + ".gz"):
+                        kin_out = kin_out + ".gz"
+                else:
+                    kin_out = None
 
             self.ensure_results_window(show=True, title="PCA / Kinship Results")
             dpg.delete_item(self._results_body, children_only=True)
 
             dpg.add_text(f"Output prefix: {outpfx}", parent=self._results_body)
             dpg.add_spacer(height=4, parent=self._results_body)
-            dpg.add_text(f"PCA files: {os.path.basename(eigvec)}, {os.path.basename(eigval)}",
-                         parent=self._results_body)
+            dpg.add_text(
+                f"PCA files: {os.path.basename(eigvec)}, {os.path.basename(eigval)}",
+                parent=self._results_body,
+            )
             if kin_out:
                 dpg.add_text(f"Kinship file: {os.path.basename(kin_out)}", parent=self._results_body)
 
-            try:
-                xs, ys = [], []
-                with open(eigvec, "r", encoding="utf-8") as f:
-                    for line in f:
-                        parts = line.strip().split()
-                        if len(parts) >= 4:
-                            xs.append(float(parts[2]))
-                            ys.append(float(parts[3]))
-                if xs and ys:
-                    dpg.add_spacer(height=10, parent=self._results_body)
-                    dpg.add_text("PC1 vs PC2", parent=self._results_body)
-                    with dpg.plot(height=420, width=720, parent=self._results_body):
-                        x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="PC1")
-                        y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="PC2")
-                        dpg.add_scatter_series(xs, ys, label="samples", parent=y_axis)
-            except Exception as ex:
-                self.add_log(f"[PCA] Could not render PC1/PC2 scatter: {ex}", warn=True)
+            self._render_pca_plots(eigvec, eigval)
 
             dpg.add_spacer(height=10, parent=self._results_body)
-            dpg.add_button(label="Export Results", parent=self._results_body,
-                           callback=lambda: dpg.show_item("select_directory"))
+            dpg.add_button(
+                label="Export Results",
+                parent=self._results_body,
+                callback=lambda: dpg.show_item("select_directory"),
+            )
 
             self.add_log("[PCA] Done.")
         except Exception as e:
             self.add_log(f"[PCA] Failed: {e}", error=True)
+
+    def _render_pca_plots(self, eigvec_path: str, eigval_path: str) -> None:
+        try:
+            xs_pc1_pc2_x, xs_pc1_pc2_y = [], []
+            xs_pc1_pc3_x, xs_pc1_pc3_y = [], []
+
+            # Read eigenvectors
+            with open(eigvec_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) < 4:
+                        continue
+                    try:
+                        pc1 = float(parts[2])
+                        pc2 = float(parts[3])
+                    except ValueError:
+                        continue
+                    xs_pc1_pc2_x.append(pc1)
+                    xs_pc1_pc2_y.append(pc2)
+
+                    if len(parts) >= 5:
+                        try:
+                            pc3 = float(parts[4])
+                        except ValueError:
+                            continue
+                        xs_pc1_pc3_x.append(pc1)
+                        xs_pc1_pc3_y.append(pc3)
+
+            # Read eigenvalues
+            eigenvalues = []
+            try:
+                with open(eigval_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            eigenvalues.append(float(line.split()[0]))
+                        except ValueError:
+                            continue
+            except FileNotFoundError:
+                eigenvalues = []
+
+            parent = self._results_body
+            dpg.add_spacer(height=10, parent=parent)
+
+            with dpg.tab_bar(parent=parent):
+                if xs_pc1_pc2_x and xs_pc1_pc2_y:
+                    with dpg.tab(label="PC1 vs PC2"):
+                        with dpg.plot(height=420, width=720):
+                            x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="PC1")
+                            y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="PC2")
+                            dpg.add_scatter_series(xs_pc1_pc2_x, xs_pc1_pc2_y, label="samples", parent=y_axis)
+
+                if xs_pc1_pc3_x and xs_pc1_pc3_y:
+                    with dpg.tab(label="PC1 vs PC3"):
+                        with dpg.plot(height=420, width=720):
+                            x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="PC1")
+                            y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="PC3")
+                            dpg.add_scatter_series(xs_pc1_pc3_x, xs_pc1_pc3_y, label="samples", parent=y_axis)
+
+                if eigenvalues:
+                    with dpg.tab(label="Scree plot"):
+                        pcs_idx = list(range(1, len(eigenvalues) + 1))
+                        with dpg.plot(height=420, width=720):
+                            x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="PC index")
+                            y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="Eigenvalue")
+                            dpg.add_line_series(pcs_idx, eigenvalues, label="eigenvalues", parent=y_axis)
+        except Exception as ex:
+            self.add_log(f"[PCA] Could not render PCA plots: {ex}", warn=True)
 
     def _bind_nav_button_theme(self, btn, active: bool):
         try:
@@ -1162,15 +1280,32 @@ class GWASApp:
             bed_path, current_path = self.get_selection_path(self.bed_app_data)
             if not bed_path:
                 return
+
             self._set_workspace_dir(os.path.dirname(bed_path))
             dpg.configure_item("file_dialog_cov", default_path=current_path or self.default_path)
             dpg.configure_item("file_dialog_pheno", default_path=current_path or self.default_path)
-            self.add_log('BED file Selected: ' + bed_path)
+            self.add_log("BED file Selected: " + bed_path)
+
             name = self._fmt_name(bed_path)
+
+            # GWAS / GP labels
             for tag in ("gwas_bed_path_lbl", "gp_bed_path_lbl"):
                 self._set_text(tag, name)
+
+            # LD page
+            if dpg.does_item_exist("ld_btn_bed"):
+                dpg.configure_item("ld_btn_bed", label=name)
+            if dpg.does_item_exist("ld_bed_path_lbl"):
+                self._set_text("ld_bed_path_lbl", name)
+
+            # PCA page
+            if dpg.does_item_exist("pca_btn_bed"):
+                dpg.configure_item("pca_btn_bed", label=name)
+            if dpg.does_item_exist("pca_bed_path_lbl"):
+                self._set_text("pca_bed_path_lbl", name)
+
         except TypeError:
-            self.add_log('Invalid BED file Selected', error=True)
+            self.add_log("Invalid BED file Selected", error=True)
 
     def callback_variants(self, s, app_data):
         self.variants_app_data = app_data
@@ -1441,12 +1576,13 @@ class GWASApp:
         except Exception as e:
             self.add_log(f"[ALN] Failed: {e}", error=True)
 
-    def run_samtools_preprocess(self, s, data):
+    def run_samtools_preprocess(self, s=None, data=None):
         try:
             in_path = self.get_selection_path(self.bam_app_data)[0]
         except Exception:
             self.add_log('Please select a SAM/BAM file first (Preprocess samtools).', error=True)
             return
+
         if not in_path or not os.path.exists(in_path):
             self.add_log('Please select a SAM/BAM file first (Preprocess samtools).', error=True)
             return
@@ -1467,7 +1603,15 @@ class GWASApp:
                 base = os.path.splitext(os.path.basename(in_path))[0]
                 bam_for_pipeline = os.path.join(self._workspace_dir, f"{base}.unsorted.bam")
                 self.add_log(f"Converting SAM -> BAM: {bam_for_pipeline}")
-                cmd = [resolve_tool("samtools"), "view", "-@", str(threads), "-bS", in_path, "-o", bam_for_pipeline]
+                cmd = [
+                    resolve_tool("samtools"),
+                    "view",
+                    "-@", str(threads),
+                    "-bS",
+                    in_path,
+                    "-o",
+                    bam_for_pipeline,
+                ]
                 p = subprocess.run(cmd, text=True, capture_output=True)
                 if p.stdout:
                     for ln in p.stdout.splitlines():
@@ -1481,14 +1625,15 @@ class GWASApp:
 
             self.add_log("Running samtools preprocess...")
             outs = self.sam.preprocess(
-                input_bam=bam_for_pipeline,
+                bam_for_pipeline,  # أول برامتر *positional* فقط
                 out_prefix=out_prefix,
                 threads=threads,
                 remove_dups=remove_dups,
                 compute_stats=compute_stats,
                 log=self.add_log,
-                keep_temps=False
+                keep_temps=False,
             )
+
             self.sam_out_last = outs.final_bam
             self.add_log(f"samtools preprocess: Done. Final BAM: {outs.final_bam}")
             if outs.bai:
@@ -1507,34 +1652,70 @@ class GWASApp:
                 except Exception:
                     pass
 
-    def run_variant_calling(self, s, data):
-        if not self.vcaller:
-            self.add_log("variant_caller_utils not found. Please add it to the project.", error=True)
-            return
+    def run_variant_calling(self, s=None, data=None):
+        # Lazy-init VariantCaller
+        if getattr(self, "vcaller", None) is None:
+            try:
+                from variant_caller_utils import VariantCaller
 
+                bcftools_bin = resolve_tool("bcftools") if resolve_tool else None
+                bgzip_bin = resolve_tool("bgzip") if resolve_tool else None
+                tabix_bin = resolve_tool("tabix") if resolve_tool else None
+
+                self.vcaller = VariantCaller(
+                    bcftools_bin=bcftools_bin,
+                    bgzip_bin=bgzip_bin,
+                    tabix_bin=tabix_bin,
+                )
+                self.add_log("[VC] VariantCaller initialized.")
+            except Exception as e:
+                self.vcaller = None
+                self.add_log(f"[VC] Could not initialize VariantCaller: {e}", error=True)
+                return
+
+        # Resolve BAM / BAM-list
         bamlist = self._get_appdata_path_safe(self.bamlist_app_data)
         bam_single = self._get_appdata_path_safe(self.bam_vc_app_data)
-        bam_spec = bamlist or bam_single
-        if not bam_spec:
+
+        if bamlist:
+            bam_spec = bamlist
+            bams_arg = bamlist  # treated as BAM-list file by VariantCaller
+        elif bam_single:
+            bam_spec = bam_single
+            bams_arg = [bam_single]  # single BAM
+        else:
             self.add_log("Please select a BAM (or BAM-list) and FASTA first.", error=True)
             return
 
+        # Resolve reference FASTA
         fasta_path = self._get_appdata_path_safe(self.fasta_app_data)
         if not fasta_path:
             self.add_log("Please select a reference FASTA first.", error=True)
             return
 
+        # Workspace and indexes
         self._set_workspace_dir(os.path.dirname(bam_spec))
 
-        if os.path.isfile(bam_spec) and not os.path.exists(bam_spec + ".bai"):
+        if bam_single and os.path.isfile(bam_single) and not os.path.exists(bam_single + ".bai"):
             self.add_log("[VC] .bai not found; indexing BAM...")
-            subprocess.run([resolve_tool("samtools"), "index", bam_spec], check=False, text=True, capture_output=True)
+            subprocess.run(
+                [resolve_tool("samtools"), "index", bam_single],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
 
         if not os.path.exists(fasta_path + ".fai"):
             self.add_log("[VC] FASTA .fai not found; building faidx...")
-            subprocess.run([resolve_tool("samtools"), "faidx", fasta_path], check=False, text=True, capture_output=True)
+            subprocess.run(
+                [resolve_tool("samtools"), "faidx", fasta_path],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
 
         regions_path = self._get_appdata_path_safe(self.blacklist_app_data)
+
         threads = max(1, int(dpg.get_value(self.vc_threads)))
         ploidy = max(1, int(dpg.get_value(self.vc_ploidy)))
         min_bq = max(0, int(dpg.get_value(self.vc_min_bq)))
@@ -1548,12 +1729,13 @@ class GWASApp:
             dpg.set_value(self.vc_out_prefix, outpfx)
 
         split_after = bool(dpg.get_value("vc_split_after_calling")) if dpg.does_item_exist(
-            "vc_split_after_calling") else False
+            "vc_split_after_calling"
+        ) else False
 
         self.add_log("Running variant calling...")
         try:
             vcf_gz, tbi = self.vcaller.call_bcftools(
-                bams=bam_spec if os.path.isfile(bam_spec) else bam_spec,
+                bams=bams_arg,
                 ref_fasta=fasta_path,
                 out_prefix=outpfx,
                 regions_bed=regions_path,
@@ -1561,7 +1743,8 @@ class GWASApp:
                 min_baseq=min_bq,
                 min_mapq=min_mq,
                 ploidy=ploidy,
-                log=self.add_log
+                log=self.add_log,
+                split_after_calling=split_after,
             )
 
             self.vc_out_last = vcf_gz
@@ -1569,46 +1752,17 @@ class GWASApp:
             name = self._fmt_name(vcf_gz)
             for tag in ("bcf_vcf_path_lbl", "qc_vcf_path_lbl", "conv_vcf_path_lbl"):
                 self._set_text(tag, name)
+
             self.add_log(f"Variant calling: Done → {vcf_gz}")
             if tbi and os.path.exists(tbi):
                 self.add_log(f"Index: {tbi}")
-
-            if split_after:
-                try:
-                    from bcftools_utils import BCFtools
-                    bcf = BCFtools(
-                        bcftools_bin=resolve_tool("bcftools"),
-                        bgzip_bin=resolve_tool("bgzip"),
-                        tabix_bin=resolve_tool("tabix")
-                    )
-                    stem = vcf_gz[:-7] if vcf_gz.endswith(".vcf.gz") else vcf_gz[:-4] if vcf_gz.endswith(
-                        ".vcf") else vcf_gz
-                    snps_out = f"{stem}.snps.vcf.gz"
-                    indels_out = f"{stem}.indels.vcf.gz"
-
-                    cmd_snps = [bcf.bcftools, "view", "-v", "snps", vcf_gz, "-Oz", "-o", snps_out]
-                    self.add_log("$ " + " ".join(cmd_snps))
-                    subprocess.run(cmd_snps, check=False, text=True, capture_output=True)
-                    subprocess.run([bcf.tabix, "-f", "-p", "vcf", snps_out], check=False, text=True,
-                                   capture_output=True)
-
-                    cmd_indels = [bcf.bcftools, "view", "-V", "snps", vcf_gz, "-Oz", "-o", indels_out]
-                    self.add_log("$ " + " ".join(cmd_indels))
-                    subprocess.run(cmd_indels, check=False, text=True, capture_output=True)
-                    subprocess.run([bcf.tabix, "-f", "-p", "vcf", indels_out], check=False, text=True,
-                                   capture_output=True)
-
-                    self.add_log(f"[VC] SNPs VCF saved → {snps_out}")
-                    self.add_log(f"[VC] INDELs VCF saved → {indels_out}")
-                except Exception as ex_split:
-                    self.add_log(f"[VC] Split after calling failed: {ex_split}", warn=True)
 
         except VariantCallerError as e:
             self.add_log(f"variant calling error: {e}", error=True)
         except Exception as e:
             self.add_log(f"Unexpected error: {e}", error=True)
 
-    def run_bcftools_preprocess(self, s, data):
+    def run_bcftools_preprocess(self, s=None, data=None):
         vcf_path = self._get_appdata_path_safe(self.vcf_app_data)
         if not vcf_path:
             self.add_log('Please select a VCF file first (Preprocess tab).', error=True)
@@ -1652,11 +1806,13 @@ class GWASApp:
                 keep_temps=False,
                 fill_tags=filltags,
             )
+
             self.bcf_out_last = final_vcf
             self._set_virtual_selection('vcf_app_data', final_vcf)
             name = self._fmt_name(final_vcf)
             for tag in ("bcf_vcf_path_lbl", "qc_vcf_path_lbl", "conv_vcf_path_lbl"):
                 self._set_text(tag, name)
+
             self.add_log("bcftools preprocess: Done.")
             if stats and os.path.exists(stats):
                 self.add_log(f"bcftools stats saved: {stats}")
@@ -1672,8 +1828,8 @@ class GWASApp:
                 cmd = [resolve_tool("bcftools"), "view", "-v", "snps", final_vcf, "-Oz", "-o", snps_out]
                 self.add_log("$ " + " ".join(cmd))
                 subprocess.run(cmd, check=False, text=True, capture_output=True)
-                subprocess.run([resolve_tool("tabix"), "-f", "-p", "vcf", snps_out], check=False, text=True,
-                               capture_output=True)
+                subprocess.run([resolve_tool("tabix"), "-f", "-p", "vcf", snps_out],
+                               check=False, text=True, capture_output=True)
                 self.add_log(f"SNP-only: {snps_out}")
 
             if make_svs:
@@ -1681,16 +1837,16 @@ class GWASApp:
                 cmd = [resolve_tool("bcftools"), "view", "-V", "snps,indels", final_vcf, "-Oz", "-o", sv_out]
                 self.add_log("$ " + " ".join(cmd))
                 subprocess.run(cmd, check=False, text=True, capture_output=True)
-                subprocess.run([resolve_tool("tabix"), "-f", "-p", "vcf", sv_out], check=False, text=True,
-                               capture_output=True)
-                self.add_log(f"SV-only:  {sv_out}")
+                subprocess.run([resolve_tool("tabix"), "-f", "-p", "vcf", sv_out],
+                               check=False, text=True, capture_output=True)
+                self.add_log(f"SV-only: {sv_out}")
 
         except BCFtoolsError as e:
             self.add_log(f"bcftools error: {e}", error=True)
         except Exception as e:
             self.add_log(f"Unexpected error: {e}", error=True)
 
-    def run_vcf_qc(self, s, data):
+    def run_vcf_qc(self, s=None, data=None):
         try:
             vcf1 = self.get_selection_path(self.vcf_app_data)[0]
         except Exception:
@@ -1710,10 +1866,12 @@ class GWASApp:
         self.add_log('Running VCF Quality Check...')
         reports = []
         names = []
+
         if vcf1:
             r1 = self.vcf_qc_checker.evaluate(vcf1, log_fn=self.add_log)
             reports.append(r1)
             names.append(self._fmt_name(vcf1))
+
         if vcf2:
             r2 = self.vcf_qc_checker.evaluate(vcf2, log_fn=self.add_log)
             reports.append(r2)
@@ -1740,9 +1898,9 @@ class GWASApp:
             try:
                 dt = getattr(report, "data_type", None)
                 if not dt:
-                    s = float(report.metrics.get("snps", 0.0) or 0.0)
-                    i = float(report.metrics.get("indels", 0.0) or 0.0)
-                    dt = "SNPs" if (s > 0 and i == 0) else "SVs"
+                    s_val = float(report.metrics.get("snps", 0.0) or 0.0)
+                    i_val = float(report.metrics.get("indels", 0.0) or 0.0)
+                    dt = "SNPs" if (s_val > 0 and i_val == 0) else "SVs"
                 dpg.add_text(f"Data type: {dt}", parent=tab_parent)
             except Exception:
                 dpg.add_text("Data type: SVs", parent=tab_parent)
@@ -1764,8 +1922,14 @@ class GWASApp:
 
             dpg.add_spacer(height=10, parent=tab_parent)
             dpg.add_text("Metrics:", parent=tab_parent)
-            with dpg.table(row_background=True, borders_innerH=True, borders_outerH=True,
-                           borders_innerV=True, borders_outerV=True, parent=tab_parent):
+            with dpg.table(
+                    row_background=True,
+                    borders_innerH=True,
+                    borders_outerH=True,
+                    borders_innerV=True,
+                    borders_outerV=True,
+                    parent=tab_parent,
+            ):
                 dpg.add_table_column(label="Metric")
                 dpg.add_table_column(label="Value")
                 for k, v in sorted(report.metrics.items()):
@@ -1777,20 +1941,40 @@ class GWASApp:
             dpg.add_text("QC Plots:", parent=tab_parent)
             with dpg.tab_bar(parent=tab_parent) as qc_tabbar:
                 d = report.dists or {}
-                self._add_hist_plot(qc_tabbar, "Depth (DP)", d.get("dp", []), bins=30,
-                                    p10=report.metrics.get("dp_p10"),
-                                    p50=report.metrics.get("dp_median"),
-                                    p90=report.metrics.get("dp_p90"))
-                self._add_hist_plot(qc_tabbar, "Genotype Quality (GQ)", d.get("gq", []), bins=30,
-                                    p10=report.metrics.get("gq_p10"),
-                                    p50=report.metrics.get("gq_median"),
-                                    p90=report.metrics.get("gq_p90"))
-                self._add_hist_plot(qc_tabbar, "Allele Balance |AB - 0.5| (hets)",
-                                    d.get("ab_dev", []), bins=30, x_range=(0.0, 1.0),
-                                    p90=report.metrics.get("ab_dev_p90"))
-                self._add_hist_plot(qc_tabbar, "Site Missingness",
-                                    d.get("site_missing", []), bins=30, x_range=(0.0, 1.0),
-                                    p90=report.metrics.get("site_missing_p90"))
+                self._add_hist_plot(
+                    qc_tabbar,
+                    "Depth (DP)",
+                    d.get("dp", []),
+                    bins=30,
+                    p10=report.metrics.get("dp_p10"),
+                    p50=report.metrics.get("dp_median"),
+                    p90=report.metrics.get("dp_p90"),
+                )
+                self._add_hist_plot(
+                    qc_tabbar,
+                    "Genotype Quality (GQ)",
+                    d.get("gq", []),
+                    bins=30,
+                    p10=report.metrics.get("gq_p10"),
+                    p50=report.metrics.get("gq_median"),
+                    p90=report.metrics.get("gq_p90"),
+                )
+                self._add_hist_plot(
+                    qc_tabbar,
+                    "Allele Balance |AB - 0.5| (hets)",
+                    d.get("ab_dev", []),
+                    bins=30,
+                    x_range=(0.0, 1.0),
+                    p90=report.metrics.get("ab_dev_p90"),
+                )
+                self._add_hist_plot(
+                    qc_tabbar,
+                    "Site Missingness",
+                    d.get("site_missing", []),
+                    bins=30,
+                    x_range=(0.0, 1.0),
+                    p90=report.metrics.get("site_missing_p90"),
+                )
 
         with dpg.tab_bar(parent=self._results_body):
             for name, rep in zip(names, reports):
@@ -1803,85 +1987,184 @@ class GWASApp:
             with dpg.tab(label=title, parent=parent):
                 dpg.add_text("No data")
             return
+
         mn = min(values)
         mx = max(values)
+
         if x_range:
             mn, mx = x_range
+
         if mx <= mn:
             mx = mn + 1e-6
+
         width = (mx - mn) / bins
         counts = [0] * bins
+
         for v in values:
+            # skip values outside the plotting range
             if v < mn or v > mx:
                 continue
+
             idx = min(bins - 1, int((v - mn) / (mx - mn) * bins))
             counts[idx] += 1
+
         centers = [mn + (i + 0.5) * width for i in range(bins)]
+
         with dpg.tab(label=title, parent=parent):
             with dpg.plot(label=title, height=380, width=720) as plot_tag:
                 x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="Value")
                 y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="Count")
+
                 dpg.add_bar_series(centers, counts, parent=y_axis, label="Histogram")
+
                 for val, lab in [(p10, "P10"), (p50, "P50"), (p90, "P90")]:
                     if val is not None:
                         try:
-                            dpg.add_drag_line(parent=plot_tag, default_value=float(val), vertical=True, label=lab)
+                            dpg.add_drag_line(
+                                parent=plot_tag,
+                                default_value=float(val),
+                                vertical=True,
+                                label=lab,
+                            )
                         except Exception:
                             pass
 
-    def convert_vcf(self, s, data, user_data):
+    def convert_vcf(self, sender=None, app_data=None, user_data=None):
+        # Try to show spinner and disable button
         try:
-            if isinstance(user_data, dict):
-                maf_item = user_data.get("maf", "tooltip_maf")
-                geno_item = user_data.get("geno", "tooltip_missing")
-            elif isinstance(user_data, (list, tuple)) and len(user_data) >= 2:
-                maf_item, geno_item = user_data[0], user_data[1]
-            else:
-                maf_item, geno_item = "tooltip_maf", "tooltip_missing"
-            maf = (str(dpg.get_value(maf_item)) or "0.01").strip()
-            geno = (str(dpg.get_value(geno_item)) or "0.1").strip()
-        except Exception as e:
-            self.add_log(f"[WARN] Using fallback for MAF/GENO due to: {e}")
-            maf, geno = "0.01", "0.1"
-
-        vcf_path, _ = self.get_selection_path(self.vcf_app_data)
-        variants_path = None if self.variants_app_data is None else self.get_selection_path(self.variants_app_data)[0]
-
-        if not vcf_path or not os.path.exists(vcf_path):
-            self.add_log('[ERROR] Please select a valid VCF file first.', error=True)
-            return
-
-        self._set_workspace_dir(os.path.dirname(vcf_path))
-
-        base_noext = os.path.splitext(os.path.basename(vcf_path))[0]
-        try:
-            out_prefix_name = f"{base_noext}_maf{round(float(maf), 3)}_geno{round(float(geno), 3)}"
+            dpg.configure_item("plink_convert_spinner", show=True)
+            dpg.configure_item("convert_vcf_btn", enabled=False)
         except Exception:
-            out_prefix_name = f"{base_noext}_maf{maf}_geno{geno}"
-        out_prefix = os.path.join(self._workspace_dir, out_prefix_name)
-
-        self.add_log("[INFO] Converting VCF → PLINK")
-        self.add_log(f"[INFO] VCF: {vcf_path}")
-        if variants_path:
-            self.add_log(f"[INFO] IDs: {variants_path}")
-        self.add_log(f"[INFO] MAF={maf}, GENO={geno}")
-        self.add_log(f"[INFO] OUT={out_prefix}")
+            pass
 
         try:
-            plink_log = self.gwas.vcf_to_bed(vcf_path, variants_path, out_prefix, maf, geno)
-            self.add_log(plink_log)
-        except Exception as e:
-            self.add_log(f"[ERROR] PLINK conversion failed: {e}", error=True)
-            return
+            # 1) Get VCF path from the existing file dialog (vcf_app_data is already used elsewhere)
+            vcf_path = self._get_appdata_path_safe(getattr(self, "vcf_app_data", None))
+            if not vcf_path:
+                self.add_log("[PLINK] Please select a VCF file first.", error=True)
+                return
 
-        bed, bim, fam = f"{out_prefix}.bed", f"{out_prefix}.bim", f"{out_prefix}.fam"
-        if all(os.path.exists(p) for p in (bed, bim, fam)):
-            self.add_log("[OK] BED/BIM/FAM generated successfully.")
-            self._set_virtual_selection('bed_app_data', bed)
-            for tag in ("gwas_bed_path_lbl", "gp_bed_path_lbl"):
-                self._set_text(tag, self._fmt_name(bed))
-        else:
-            self.add_log("[ERROR] Conversion did not produce BED/BIM/FAM files.", error=True)
+            # keep workspace next to VCF
+            self._set_workspace_dir(os.path.dirname(vcf_path))
+
+            # 2) optional IDs file from the variants dialog
+            ids_path = self._get_appdata_path_safe(getattr(self, "variants_app_data", None))
+
+            # base name used for both normalized VCF and PLINK output
+            base = os.path.splitext(os.path.basename(vcf_path))[0]
+
+            # 3) normalize VCF to split multi-allelic variants (bcftools norm -m -any)
+            vcf_to_use = vcf_path
+            bcftools_exe = shutil.which("bcftools")
+            if bcftools_exe:
+                normalized_vcf = os.path.join(self.workspace_dir, f"{base}.split.vcf.gz")
+                norm_cmd = [
+                    bcftools_exe,
+                    "norm",
+                    "-m", "-any",
+                    vcf_path,
+                    "-Oz",
+                    "-o", normalized_vcf,
+                ]
+                index_cmd = [bcftools_exe, "index", normalized_vcf]
+
+                self.add_log(f"[PLINK] Normalizing VCF with bcftools: {' '.join(norm_cmd)}")
+                proc_norm = subprocess.run(
+                    norm_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                self.add_log(proc_norm.stdout)
+
+                if proc_norm.returncode != 0:
+                    raise RuntimeError(f"bcftools norm failed with exit code {proc_norm.returncode}")
+
+                proc_index = subprocess.run(
+                    index_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                self.add_log(proc_index.stdout)
+
+                if proc_index.returncode != 0:
+                    raise RuntimeError(f"bcftools index failed with exit code {proc_index.returncode}")
+
+                vcf_to_use = normalized_vcf
+                self.add_log(f"[PLINK] Using normalized VCF: {vcf_to_use}")
+            else:
+                self.add_log(
+                    "[PLINK] 'bcftools' not found in PATH; using original VCF "
+                    "(multiallelic variants may cause PLINK to fail).",
+                    error=True,
+                )
+
+            # 4) read filters from UI by tag (defined in page_convert_plink)
+            try:
+                maf = float(dpg.get_value("plink_maf_input") or 0.05)
+            except Exception:
+                maf = 0.05
+
+            try:
+                geno = float(dpg.get_value("plink_missing_input") or 0.10)
+            except Exception:
+                geno = 0.10
+
+            mind = geno  # reuse geno for mind if there is no separate input
+
+            # 5) choose output prefix next to the VCF
+            out_prefix = os.path.join(self.workspace_dir, f"{base}.plink")
+
+            # 6) locate plink/plink2 in PATH
+            plink_exe = shutil.which("plink2")
+            if not plink_exe:
+                self.add_log(
+                    "[PLINK] Could not find plink2 in PATH. "
+                    "Please install PLINK 2 and make sure the 'plink2' command is available.",
+                    error=True,
+                )
+                return
+
+            # 7) build PLINK command
+            cmd = [
+                plink_exe,
+                "--vcf", vcf_to_use,
+                "--make-bed",
+                "--maf", str(maf),
+                "--geno", str(geno),
+                "--mind", str(mind),
+                "--out", out_prefix,
+            ]
+            if ids_path:
+                cmd.extend(["--extract", ids_path])
+
+            self.add_log(f"[PLINK] Running: {' '.join(cmd)}")
+
+            # 8) run PLINK and log its output
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.add_log(proc.stdout)
+
+            if proc.returncode != 0:
+                raise RuntimeError(f"PLINK failed with exit code {proc.returncode}")
+
+            self.add_log(f"[PLINK] Conversion finished. Output prefix: {out_prefix}")
+            self.add_log(f"[PLINK] Expected files: {out_prefix}.bed / .bim / .fam")
+
+        except Exception as e:
+            self.add_log(f"[PLINK] Error during conversion: {e}", error=True)
+
+        finally:
+            try:
+                dpg.configure_item("plink_convert_spinner", show=False)
+                dpg.configure_item("convert_vcf_btn", enabled=True)
+            except Exception:
+                pass
 
     def _build_top_snps_file(self):
         try:

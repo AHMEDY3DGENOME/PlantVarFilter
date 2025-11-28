@@ -97,7 +97,7 @@ class LDAnalyzer:
             "--ld-window-kb", str(window_kb),
             "--ld-window", str(window_snps),
             "--ld-window-r2", str(min_r2),
-            "--ld-window-bp", str(max_dist_kb * 1000),
+            # "--ld-window-bp", str(max_dist_kb * 1000),
         ]
         _run(cmd)
 
