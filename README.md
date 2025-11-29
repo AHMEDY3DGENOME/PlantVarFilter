@@ -183,9 +183,96 @@ This is a description of the entire experience, starting from building indexing 
 
 ![Building indexing](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/11.png)
 
+- the result for Building indexing 
 
+![Result indexing](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/12.png)
 
+-----------------------------------------------------------------------------------------------------------------------
+## Alignment Stage
+- At this stage, alignment is made between the reference and the raw reading.
 
+![Alignment](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/22.png)
+
+- The alignment result is displayed via the pipeline terminal.
+
+![Alignment](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/13.png)
+
+After this stage, a SAM File. 
+
+-----------------------------------------------------------------------------------------------------------------------
+## VCF Stage
+- At this stage, after the file is produced VCF File from the pipeline, we check its quality via the pipeline.
+
+![Vcf qc](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/14.png)
+
+Convert VCF File to plink. 
+
+![plink](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/15.png)
+
+Plink Result ths files. 
+
+![plink result](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/16.png)
+
+------------------------------------------------------------------------------------------------------------------------
+
+## GWAS Stage. 
+
+- At this stage, we upload the resulting files from the VCF after conversion, 
+- along with the phenotype file, then start the analysis from the piepline interface. 
+- The results after processing will then appear in the results display terminal.
+
+![GWAS result](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/17.png)
+
+![GWAS result one](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/18.png)
+
+![GWAS result two](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/19.png)
+
+![GWAS result three](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/20.png)
+
+------------------------------------------------------------------------------------------------------------------------
+
+## LD Analysis Stage
+- Through the new pipeline we offer, we can conduct LD Analysis from UI Piepline. 
+
+![Ld analysis](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/21.png)
+
+- Then, a simulation of the data is displayed in the interface, which the user can download for use.
+
+![Ld analysis result](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/22.png)
+
+![Ld analysis result o](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/23.png)
+
+![Ld analysis result t](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/24.png)
+
+------------------------------------------------------------------------------------------------------------------------
+
+## PCA Kinship Stage
+- We can also conduct PCA/KINSHIP analysis across the pipeline interface.
+
+![pca result t](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/25.png)
+
+- The results 
+
+![pca result tu](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/26.png)
+
+![pca result tuu](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/27.png)
+
+![pca result tudu](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/28.png)
+
+------------------------------------------------------------------------------------------------------------------------
+
+## Genomics Prediction Stage
+- In this section we can perform Genomics prediction analysis
+
+The results
+
+![genomics result tudu](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/29.png)
+
+![genomics result toudu](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/30.png)
+
+![genomics results toudu](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/31.png)
+
+![genomics resultsd toudu](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/32.png)
 
 ## 15. Experimental Evaluation (FaST-LMM)
 
