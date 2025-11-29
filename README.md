@@ -1,5 +1,13 @@
 # PlantVarFilter: An Integrated GWAS and Genomic Prediction Pipeline for Plant Genomes
 
+## Developers & Contributors
+
+| Developer        | Position / Contribution | Affiliation |
+|------------------|-------|-------------|
+| **Ahmed Yassin** | Phd candidate | Ye-Lab      |
+| **Falak Sher Khan** | Post-doctoral scientist      | Ye-Lab      |
+
+
 
 ## Abstract
 PlantVarFilter represents the second-generation release of a previously lightweight Python toolkit, now evolved into a fully modular and GUI-based genomic analysis pipeline designed for large-scale plant genomics. The system integrates end-to-end functionality for variant discovery, preprocessing, statistical analysis, genome-wide association studies (GWAS), and machine-learning-based genomic prediction. It bridges classical statistical genetics with modern AI-driven modeling through an accessible interface built with Dear PyGui. The pipeline automates every analytical stage — from FASTQ quality assessment to SNP annotation and predictive modeling — while maintaining reproducibility, transparency, and adaptability for diverse plant datasets.
