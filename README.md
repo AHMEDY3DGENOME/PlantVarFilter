@@ -258,7 +258,8 @@ Plink Result ths files.
 
 ![pca result tuu](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/27.png)
 
-![pca result tudu](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/28.png)
+![pca result tuu](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/28.png)
+
 
 ------------------------------------------------------------------------------------------------------------------------
 
