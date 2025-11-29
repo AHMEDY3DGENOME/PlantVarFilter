@@ -112,11 +112,15 @@ class Aligner:
         ]
         self.log(f"[ALN] $ {' '.join(align_cmd)}")
 
-        if save_sam:
-            self._run(align_cmd + ["-o", str(sam_path)])
-            self._sam_to_sorted_bam(str(sam_path), str(bam_path), threads=threads)
-        else:
-            self._pipe_to_sorted_bam(align_cmd, str(bam_path), threads=threads)
+        # Always write SAM to disk, then convert to sorted BAM
+        self._run(align_cmd + ["-o", str(sam_path)])
+        self._sam_to_sorted_bam(str(sam_path), str(bam_path), threads=threads)
+
+        if not save_sam:
+            try:
+                sam_path.unlink()
+            except OSError:
+                pass
 
         if mark_duplicates:
             self._markdup_inplace(str(bam_path))
@@ -183,11 +187,15 @@ class Aligner:
 
         self.log(f"[ALN] $ {' '.join(args)}")
 
-        if save_sam:
-            self._run(args + ["-S", str(sam_path)])
-            self._sam_to_sorted_bam(str(sam_path), str(bam_path), threads=threads)
-        else:
-            self._pipe_to_sorted_bam(args + ["-S", "-"], str(bam_path), threads=threads)
+        # Always write SAM to disk, then convert to sorted BAM
+        self._run(args + ["-S", str(sam_path)])
+        self._sam_to_sorted_bam(str(sam_path), str(bam_path), threads=threads)
+
+        if not save_sam:
+            try:
+                sam_path.unlink()
+            except OSError:
+                pass
 
         if mark_duplicates:
             self._markdup_inplace(str(bam_path))
@@ -222,14 +230,24 @@ class Aligner:
         if p in {"ont", "nanopore", "pb", "pacbio", "hifi", "long"}:
             preset = "map-ont" if p in {"ont", "nanopore", "long"} else ("map-hifi" if p in {"hifi"} else "map-pb")
             return self.minimap2(
-                reference, [reads1] if not reads2 else [reads1, reads2],
-                preset=preset, threads=threads, read_group=read_group,
-                save_sam=save_sam, out_dir=out_dir, out_prefix=out_prefix
+                reference,
+                [reads1] if not reads2 else [reads1, reads2],
+                preset=preset,
+                threads=threads,
+                read_group=read_group,
+                save_sam=save_sam,
+                out_dir=out_dir,
+                out_prefix=out_prefix,
             )
         return self.bowtie2(
-            reference, reads1, reads2,
-            threads=threads, read_group=read_group, save_sam=save_sam,
-            out_dir=out_dir, out_prefix=out_prefix
+            reference,
+            reads1,
+            reads2,
+            threads=threads,
+            read_group=read_group,
+            save_sam=save_sam,
+            out_dir=out_dir,
+            out_prefix=out_prefix,
         )
 
     def _tool_path(self, name: str) -> Optional[str]:
@@ -237,26 +255,81 @@ class Aligner:
         return str(p) if p else None
 
     def _run(self, cmd: List[str]) -> None:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        # Log the command being executed
+        self.log(f"[ALN] RUN: {' '.join(cmd)}")
+
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
         if proc.stdout:
             self.log(proc.stdout.rstrip())
+
+        if proc.stderr:
+            self.log(proc.stderr.rstrip())
+
         if proc.returncode != 0:
-            raise RuntimeError(f"Command failed: {' '.join(cmd)}")
+            output = (proc.stdout or "").strip()
+            err = (proc.stderr or "").strip()
+
+            msg_parts = [f"Command failed (rc={proc.returncode}): {' '.join(cmd)}"]
+            if output:
+                msg_parts.append("STDOUT:\n" + output[-4000:])
+            if err and err not in output:
+                msg_parts.append("STDERR:\n" + err[-4000:])
+
+            raise RuntimeError("\n".join(msg_parts))
 
     def _pipe_to_sorted_bam(self, align_cmd: List[str], bam_out: str, threads: int = 8) -> None:
         assert self._samtools_bin
-        p1 = subprocess.Popen(align_cmd, stdout=subprocess.PIPE)
-        p2 = subprocess.Popen([self._samtools_bin, "view", "-bS", "-"], stdin=p1.stdout, stdout=subprocess.PIPE)  # type: ignore
-        p3 = subprocess.Popen([self._samtools_bin, "sort", "-@", str(threads), "-o", bam_out], stdin=p2.stdout)  # type: ignore
-        p3.communicate()
-        if p3.returncode != 0:
-            raise RuntimeError("Failed to produce sorted BAM")
+
+        import shlex
+
+        align_str = " ".join(shlex.quote(x) for x in align_cmd)
+        view_str = f"{shlex.quote(self._samtools_bin)} view -b -"
+        sort_str = f"{shlex.quote(self._samtools_bin)} sort -@ {int(threads)} -o {shlex.quote(bam_out)} -"
+
+        pipeline = f"{align_str} | {view_str} | {sort_str}"
+
+        self.log(f"[ALN] pipe (shell): {pipeline}")
+
+        proc = subprocess.run(
+            pipeline,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        if proc.stdout:
+            self.log("[ALN] pipe stdout (truncated):\n" + proc.stdout[:1000])
+
+        if proc.stderr:
+            self.log("[ALN] pipe stderr:\n" + proc.stderr)
+
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Failed to produce sorted BAM (pipeline rc={proc.returncode})"
+            )
 
     def _sam_to_sorted_bam(self, sam_path: str, bam_out: str, threads: int = 8) -> None:
         assert self._samtools_bin
-        self._run([self._samtools_bin, "view", "-bS", sam_path, "-o", bam_out])  # type: ignore
+        self._run([self._samtools_bin, "view", "-b", sam_path, "-o", bam_out])  # type: ignore
         tmp_sorted = bam_out + ".tmp"
-        self._run([self._samtools_bin, "sort", "-@", str(threads), "-o", tmp_sorted, bam_out])  # type: ignore
+        self._run([
+            self._samtools_bin,
+            "sort",
+            "-@",
+            str(threads),
+            "-m",
+            "1G",
+            "-o",
+            tmp_sorted,
+            bam_out,
+        ])  # type: ignore
         os.replace(tmp_sorted, bam_out)
 
     def _markdup_inplace(self, bam_path: str) -> None:
@@ -279,7 +352,12 @@ class Aligner:
     def _flagstat(self, bam_path: str, out_txt: str) -> None:
         assert self._samtools_bin
         with open(out_txt, "w") as fw:
-            proc = subprocess.run([self._samtools_bin, "flagstat", bam_path], stdout=fw, stderr=subprocess.STDOUT, text=True)  # type: ignore
+            proc = subprocess.run(
+                [self._samtools_bin, "flagstat", bam_path],
+                stdout=fw,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )  # type: ignore
             if proc.returncode != 0:
                 raise RuntimeError("samtools flagstat failed")
 

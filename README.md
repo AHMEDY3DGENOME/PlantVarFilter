@@ -175,8 +175,19 @@ organized by analytical stages (Reference → QC → Alignment → VCF → GWAS 
 
 ![PlantVarFilter GUI Layout](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/gui_overview.png)
 
+## 14. Full Test from Piepline 
+This is a description of the entire experience, starting from building indexing to GWAS analysis and Genomics prediction. 
 
-## 14. Experimental Evaluation (FaST-LMM)
+- From the beginning, we can build indexing from the reference and readings file. These files are raw files in the format (FASTQ)
+
+
+![Building indexing](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/11.png)
+
+
+
+
+
+## 15. Experimental Evaluation (FaST-LMM)
 
 **Run ID:** `07092025_154023_FaST-LMM`  
 This experiment was executed on a crop dataset (~5M SNPs × 150 samples) using the FaST-LMM model integrated within PlantVarFilter.
