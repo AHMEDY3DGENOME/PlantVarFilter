@@ -191,7 +191,8 @@ This is a description of the entire experience, starting from building indexing 
 ## Alignment Stage
 - At this stage, alignment is made between the reference and the raw reading.
 
-![Alignment](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/22.png)
+![Alignment result](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/222.png)
+
 
 - The alignment result is displayed via the pipeline terminal.
 
