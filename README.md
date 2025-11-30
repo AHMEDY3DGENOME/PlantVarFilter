@@ -2,12 +2,24 @@
 
 ## Developers & Contributors
 
-| Developer        | Position / Contribution | Affiliation |
-|------------------|-------|-------------|
-| **Ahmed Yassin** | Phd candidate | Ye-Lab      |
-| **Falak Sher Khan** | Post-doctoral scientist      | Ye-Lab      |
+| Developer                         | Expertise                     |
+|----------------------------------|-------------------------------|
+| **Ahmed Yassin**                 | Computational Biologist       |
+| **Falak Sher Khan**              | Computational Biologist       |
+| **Plantvarfilter Software (Affiliation)** | Ye-Lab (PKU-IAAS)        |
 
+------------------------------------------------------------------------------------------------------------------------
+## Developed By: 
 
+- Ahmed Yassin, Computational Biologist
+- Falak Sher Khan, Computational Biologist 
+- ( Peking University Institute of Advanced Agricultural Science, PKU-IAAS)
+
+## Acknowledgment
+
+<div style="border: 1px solid #74c0fc; padding: 14px; border-radius: 8px; background: #e7f5ff; color: #0b7285;">
+<b>The authors gratefully acknowledge the computational resources provided by Prof. Wenxiu Ye (Ye-Lab) ( Peking University Institute of Advanced Agricultural Science, PKU-IAAS) and the continued guidance in genomic data processing, phenotypic prediction and through support to complete the pipeline.</b>
+</div>
 
 ## Abstract
 PlantVarFilter represents the second-generation release of a previously lightweight Python toolkit, now evolved into a fully modular and GUI-based genomic analysis pipeline designed for large-scale plant genomics. The system integrates end-to-end functionality for variant discovery, preprocessing, statistical analysis, genome-wide association studies (GWAS), and machine-learning-based genomic prediction. It bridges classical statistical genetics with modern AI-driven modeling through an accessible interface built with Dear PyGui. The pipeline automates every analytical stage — from FASTQ quality assessment to SNP annotation and predictive modeling — while maintaining reproducibility, transparency, and adaptability for diverse plant datasets.
@@ -154,9 +166,11 @@ plantvarfilter
 ![open gui piepline](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/10.png) 
 
 ## 9. Citation
-If you use PlantVarFilter in your research, please cite the following paper:
 
-> Yassin, A., & Khan, F. S. (2025). *PlantVarFilter: A lightweight variant filtering and analysis toolkit for plant genomes.* bioRxiv. https://doi.org/10.1101/2025.07.02.662805
+- If you use PlantVarFilter in your research, please cite the following paper:
+
+# Manuscript are under process
+
 
 ## 10. Authors and Acknowledgment
 **Developed by:**  
