@@ -12,8 +12,8 @@
 ## Developed By: 
 
 - Ahmed Yassin, Computational Biologist
-- Falak Sher Khan, Computational Biologist 
-- ( Peking University Institute of Advanced Agricultural Science, PKU-IAAS)
+- Falak Sher Khan, Computational Biologist ( Peking University Institute of Advanced Agricultural Science, PKU-IAAS)
+
 
 ## Acknowledgment
 
@@ -167,9 +167,7 @@ plantvarfilter
 
 ## 9. Citation
 
-- If you use PlantVarFilter in your research, please cite the following paper:
-
-# Manuscript are under process
+## If you use PlantVarFilter in your research, please cite the following paper:  Manuscript are under write up.
 
 
 ## 10. Authors and Acknowledgment
@@ -180,9 +178,14 @@ Ye-Lab, Institute of Advanced Agricultural Sciences (IAAS), Peking University
 The authors gratefully acknowledge the computational resources provided by Ye-Lab and the continued guidance in genomic data processing and AI-based phenotypic prediction.
 
 ## 11. License and Availability
-PlantVarFilter is released under the MIT License.  
+PlantVarFilter is licensed under the **Ye-Lab (Peking University Institute of Advanced Agricultural Science, PKU-IAAS)** 
+Copyright © 2025  
+ 
+
 Source code and continuous updates are available on the official repository.  
 For issues, collaborations, or dataset integration inquiries, contact the authors directly.
+
+
 
 ## 12. Future Directions
 Planned updates include:
