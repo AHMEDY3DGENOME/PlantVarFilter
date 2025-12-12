@@ -1,10 +1,14 @@
 # main_ui.py
+import threading
+import queue
+import traceback
 import os
 import shutil
 import subprocess
 import time
 import dearpygui.dearpygui as dpg
 import sys
+from pathlib import Path
 
 # dearpygui-ext is optional; keep the GUI working even if it's missing.
 try:
@@ -28,6 +32,7 @@ from .gwas_pipeline import GWAS
 from .genomic_prediction_pipeline import GenomicPrediction
 from .helpers import HELPERS
 from .pipeline_plots import Plot
+from plantvarfilter.pangenome_builder import build_pangenome_mvp
 
 # pysnptools may not be available on all Py3.12 envs; keep the GUI booting anyway.
 try:
@@ -102,6 +107,9 @@ from .ui.ui_pages import build_pages  # (remove duplicate import if existed)
 
 class GWASApp:
     def __init__(self):
+        self._ui_events = queue.Queue()
+        self._active_tasks = {}
+        self._task_lock = threading.Lock()
         self._inputs = []
         self._primary_buttons = []
         self._secondary_buttons = []
@@ -206,6 +214,7 @@ class GWASApp:
 
         self._nav_items = [
             ("ref_manager", "Reference Manager"),
+            ("pangenome", "Pangenome Builder"),
             ("fastq_qc", "FASTQ QC"),
             ("alignment", "Alignment"),
             ("pre_sam", "Preprocess (samtools)"),
@@ -357,7 +366,6 @@ class GWASApp:
 
         if show:
             dpg.show_item(window_tag)
-            # بعض نسخ DearPyGui لا تحتوي على bring_item_to_front
             if hasattr(dpg, "bring_item_to_front"):
                 dpg.bring_item_to_front(window_tag)
             elif hasattr(dpg, "focus_item"):
@@ -1091,22 +1099,106 @@ class GWASApp:
                     dpg.add_text(txt, color=[79, 128, 90])
 
     def run(self):
+        from pathlib import Path
+        import dearpygui.dearpygui as dpg
+
         dpg.create_context()
         try:
             self.setup_gui()
-            dpg.create_viewport(title="plantvarfilter", width=1600, height=1000, resizable=True)
+
+            icon_path = Path(__file__).resolve().parent / "assets" / "app_icon.png"
+
+            kwargs = dict(
+                title="PlantVarFilter",
+                width=1400,
+                height=900,
+                resizable=True,
+            )
+
+            if icon_path.exists():
+                kwargs["small_icon"] = str(icon_path)
+                kwargs["large_icon"] = str(icon_path)
+
+            dpg.create_viewport(**kwargs)
             dpg.setup_dearpygui()
             dpg.show_viewport()
+
             self._refresh_watermark()
             try:
                 dpg.set_frame_callback(1, lambda: self._refresh_watermark())
             except Exception:
                 pass
-            self._hook_viewport_resize()
-            self._on_viewport_resize(None, None)
+
+            if hasattr(self, "_install_ui_poller"):
+                try:
+                    self._install_ui_poller()
+                except Exception:
+                    pass
+
             dpg.start_dearpygui()
         finally:
             dpg.destroy_context()
+
+    def ui_emit(self, fn, *args, **kwargs):
+        try:
+            self._ui_events.put((fn, args, kwargs))
+        except Exception:
+            pass
+
+    def _ui_poll(self):
+        drained = 0
+        while drained < 200:
+            try:
+                fn, args, kwargs = self._ui_events.get_nowait()
+            except Exception:
+                break
+            try:
+                fn(*args, **kwargs)
+            except Exception:
+                pass
+            drained += 1
+
+    def run_task(self, key: str, target, on_done=None, on_error=None):
+        with self._task_lock:
+            t = self._active_tasks.get(key)
+            if t and t.is_alive():
+                self.add_log(f"[TASK] '{key}' is already running.", warn=True)
+                return
+
+        def _runner():
+            try:
+                res = target()
+                if on_done:
+                    self.ui_emit(on_done, res)
+            except Exception as e:
+                if on_error:
+                    self.ui_emit(on_error, e)
+                else:
+                    tb = traceback.format_exc()
+                    self.ui_emit(self.add_log, f"[TASK] '{key}' failed: {e}\n{tb}", True, False, True)
+
+        th = threading.Thread(target=_runner, daemon=True)
+        with self._task_lock:
+            self._active_tasks[key] = th
+        th.start()
+
+    def _install_ui_poller(self):
+        if hasattr(dpg, "set_render_callback"):
+            dpg.set_render_callback(lambda: self._ui_poll())
+            return
+
+        def _tick():
+            self._ui_poll()
+            try:
+                dpg.set_frame_callback(1, lambda: _tick())
+            except Exception:
+                pass
+
+        try:
+            dpg.set_frame_callback(1, lambda: _tick())
+        except Exception:
+            pass
+
 
     def _hook_viewport_resize(self):
         if hasattr(dpg, "add_viewport_resize_handler"):
