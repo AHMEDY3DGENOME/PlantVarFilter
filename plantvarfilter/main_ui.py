@@ -32,7 +32,7 @@ from .gwas_pipeline import GWAS
 from .genomic_prediction_pipeline import GenomicPrediction
 from .helpers import HELPERS
 from .pipeline_plots import Plot
-from plantvarfilter.pangenome_builder import build_pangenome_mvp
+from plantvarfilter.pangenome_builder import build_pangenome_graph
 
 # pysnptools may not be available on all Py3.12 envs; keep the GUI booting anyway.
 try:
