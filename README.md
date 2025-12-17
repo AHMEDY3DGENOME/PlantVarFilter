@@ -211,6 +211,195 @@ This is a description of the entire experience, starting from building indexing 
 - the result for Building indexing 
 
 ![Result indexing](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/12.png)
+------------------------------------------------------------------------------------------------------------------------
+## Pangenome Support (Graph-Based Reference Framework)
+
+PlantVarFilter incorporates native support for **pangenome-based genomic analysis** alongside conventional linear reference workflows. This capability enables the construction, management, and utilization of **graph-based pangenome references**, allowing a more comprehensive representation of genomic diversity across multiple individuals or assemblies.
+
+### Conceptual Framework
+
+The pangenome functionality in PlantVarFilter follows a **reference-agnostic design philosophy**, ensuring flexibility without compromising compatibility with established analysis pipelines:
+
+- Researchers possessing a **linear reference genome (FASTA)** may use the software directly without modification.
+- Researchers with an existing **pangenome graph (GFA)** may register and manage it as a primary reference.
+- Researchers who only have a linear reference may **construct a pangenome internally** using the integrated Pangenome Builder module.
+
+This approach enables seamless transition between linear and graph-based representations depending on analytical requirements.
+
+---
+
+### Supported Reference Representations
+
+PlantVarFilter supports multiple reference genome formats:
+
+- **Linear Reference Genome (FASTA)**  
+  A traditional single-reference genome used in alignment, variant calling, and genome-wide association studies (GWAS).
+
+- **Graph-Based Pangenome (GFA)**  
+  A non-linear reference structure integrating multiple genomes or consensus assemblies, generated using graph-based genome construction algorithms (e.g., *minigraph*).
+
+- **Linearized Pangenome Reference (optional)**  
+  A FASTA-compatible representation derived from a pangenome graph to maintain compatibility with tools requiring linear coordinate systems.
+
+---
+
+## Pangenome Builder Module
+
+The **Pangenome Builder** module enables the construction of a **graph-based pangenome reference (GFA)** by integrating:
+
+- A base linear reference genome (FASTA)
+- One or more genome assemblies or consensus FASTA sequences
+
+## Input Requirements
+- Base reference genome (FASTA)
+- Assemblies or consensus genomes provided as:
+  - A single multi-FASTA file, or
+  - A directory containing multiple FASTA files
+- Output directory
+- Build configuration parameters (subset or full dataset mode, minimum contig length)
+
+## Output Products
+- `pangenome.gfa` — a graph-based pangenome reference
+- Build reports and log files documenting parameters, inputs, and execution details
+
+The resulting GFA file represents a **true pangenome graph**, composed of sequence segments and graph links that capture alternative genomic paths and structural variation.
+
+---
+
+## Reference Utilization and Compatibility
+
+Once generated, the pangenome graph may be registered as an active reference within PlantVarFilter.  
+Graph-based references are treated as **first-class reference entities**, with automatic validation of compatibility prior to downstream analysis.
+
+Modules that require a linear coordinate system (e.g., conventional GWAS pipelines) are explicitly validated, and users are guided to select or export a compatible linear reference representation when necessary.
+
+---
+
+## GWAS Considerations
+
+Standard GWAS methodologies operate on linear genomic coordinates (VCF/PLINK formats). Therefore:
+
+- Graph-based pangenome references (GFA) are not directly consumed by GWAS tools.
+- PlantVarFilter maintains GWAS compatibility by enabling the use of **linear reference representations derived from the pangenome**.
+
+This ensures methodological correctness while preserving the advantages of pangenome-based preprocessing.
+
+---
+
+## Design Rationale
+
+The pangenome framework in PlantVarFilter is intentionally modular and non-prescriptive:
+
+- Linear reference workflows remain fully supported.
+- Pangenome-based references are optional and user-driven.
+- Advanced graph-based analyses can be introduced incrementally without disrupting existing pipelines.
+
+This design allows PlantVarFilter to serve both traditional GWAS studies and emerging pangenome-centered research paradigms.
+
+## Pangenome module interface 
+
+![PanGenome_module](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/3352623.png)
+
+### Test Result
+
+### Core Files Used for Pangenome Generation
+
+The pangenome reference in this example was generated directly from the following core input files:
+
+- `VHP.hap1.fna`  
+  Linear reference genome used as the base reference.
+
+- `SRR23801158_1.fastq.gz`  
+  Sequencing reads used to derive a consensus genome incorporated into the pangenome.
+
+#### Output File
+
+- `pangenome.gfa`  
+  Graph-based pangenome reference generated directly from the base reference and the sequencing reads.
+
+### OutPut Files for generate Pangenome from PlantVarFilter
+
+![PanGenome_input](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/123123.png)
+
+### After the operation is complete, the reference is output in a separate file.
+
+![PanGenome_output](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/678678.png)
+
+
+------------------------------------------------------------------------------------------------------------------------
+### Reference Validation (Minimal Example)
+
+The generated pangenome reference was validated using basic structural integrity checks to ensure compliance with accepted bioinformatics standards.
+
+```aiignore
+grep -c '^S' pangenome.gfa
+grep -c '^L' pangenome.gfa
+
+```
+![PanGenome_img](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/000111.png)
+
+
+### Interpretation of Pangenome Graph Statistics
+ - Basic inspection of the generated pangenome graph produced the following results:
+The pangenome graph contains 5,001 sequence segments (S) and 7,153 graph links (L).
+
+Sequence segments represent distinct genomic regions derived from the base reference and the incorporated sequencing data. Graph links describe the structural relationships between these segments, including alternative genomic paths and branching points.
+
+The presence of a greater number of links than segments indicates a non-linear genome structure, confirming that the output is a true graph-based pangenome rather than a linear reference or a simple sequence concatenation.
+
+These statistics validate the structural integrity of the generated pangenome and demonstrate successful integration of genomic variation beyond a single linear reference
+
+-----------------------------------------------------------------------------------------------------------------------
+## Reference Usage Scenarios in PlantVarFilter
+
+PlantVarFilter is designed with a reference-agnostic architecture that supports multiple genomic analysis scenarios. Depending on the available data, users may follow one of the three workflows outlined below.
+
+---
+
+### Scenario 1: Using an Existing Linear Reference Genome
+
+If the user already possesses a standard linear reference genome (FASTA format), PlantVarFilter can be used directly without any additional preprocessing.
+
+In this scenario:
+- The linear reference genome is registered in the Reference Manager.
+- All downstream modules (alignment, variant calling, GWAS, PCA, and genomic prediction) operate using conventional linear-coordinate workflows.
+
+This mode ensures full compatibility with established GWAS methodologies and external tools such as PLINK.
+
+---
+
+### Scenario 2: Generating a Pangenome Reference from Raw Data
+
+If the user does not have a pangenome reference but possesses:
+- A base linear reference genome (FASTA), and
+- Sequencing reads or consensus assemblies,
+
+PlantVarFilter enables internal construction of a **graph-based pangenome reference** using the integrated Pangenome Builder module.
+
+In this scenario:
+- The pangenome is generated directly from the provided data.
+- The resulting graph-based reference (GFA) captures genomic variation beyond the base reference.
+- The generated pangenome may be registered and managed within the software as a reference entity.
+
+This workflow supports exploratory and population-aware genomic analysis while preserving downstream compatibility.
+
+---
+
+### Scenario 3: Using an Existing Pangenome Reference
+
+If the user already has a previously generated pangenome reference (GFA format), it can be directly imported into PlantVarFilter.
+
+In this scenario:
+- The pangenome reference is validated and registered without reconstruction.
+- The software treats the pangenome as a first-class reference object.
+- Users may proceed with compatible downstream analyses or derive linear representations when required.
+
+---
+
+### Design Philosophy
+
+These three scenarios ensure that PlantVarFilter accommodates both traditional linear-reference studies and emerging pangenome-driven research, allowing users to transition seamlessly between workflows without altering their experimental design.
+
 
 -----------------------------------------------------------------------------------------------------------------------
 ## Alignment Stage
@@ -318,12 +507,5 @@ Genome-wide Manhattan and QQ plots illustrating the significance distribution of
 ![Manhattan Plot](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/manhatten_plot_high.png)
 ![QQ Plot](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantVarFilter/main/plantvarfilter/assets/qq_plot_high.png)
 
-
-**Summary of results:**
-- Ti/Tv ratio ≈ 2.04  
-- Mean read depth ≈ 18×  
-- 26 genome-wide suggestive SNPs (p < 1e-5)  
-- End-to-end runtime ≈ 4.6 hours (16-core CPU, 64 GB RAM)  
-- Analytical complexity reduced by ~65% vs. manual CLI workflows  
 
 > These outputs validate the efficiency and reproducibility of PlantVarFilter’s GWAS module.

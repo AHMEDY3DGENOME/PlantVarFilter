@@ -7,6 +7,11 @@ import platform as _pf
 import subprocess
 import dearpygui.dearpygui as dpg
 import traceback
+import os
+import dearpygui.dearpygui as dpg
+
+from ..pangenome_builder import build_pangenome_graph
+
 
 try:
     from plantvarfilter.preanalysis import (
@@ -161,9 +166,7 @@ def page_reference_manager(app, parent):
     return "page_ref_manager"
 
 def page_pangenome_builder(app, parent):
-    import os
-    import shutil
-    import tempfile
+
 
     with dpg.group(parent=parent, show=False, tag="page_pangenome"):
         dpg.add_text("\nPangenome Builder", indent=10)
@@ -178,10 +181,17 @@ def page_pangenome_builder(app, parent):
         )
 
         _file_input_row(
-            "Assemblies FASTA (single file):",
+            "Assemblies / Consensus FASTA (file):",
             "pan_assembly_fasta",
             parent,
             (".fa", ".fasta", ".fna"),
+            app=app,
+        )
+
+        _dir_input_row(
+            "Assemblies / Consensus Folder (many FASTA):",
+            "pan_assemblies_dir",
+            parent,
             app=app,
         )
 
@@ -225,18 +235,22 @@ def page_pangenome_builder(app, parent):
         def _get_vals():
             base_ref = (dpg.get_value("input_pan_base_ref") or "").strip()
             asm_file = (dpg.get_value("input_pan_assembly_fasta") or "").strip()
+            asm_dir = (dpg.get_value("input_pan_assemblies_dir") or "").strip()
             out_dir = (dpg.get_value("input_pan_out_dir") or "").strip()
             mode = dpg.get_value("pan_mode")
             min_len = dpg.get_value("pan_min_contig_len")
-            return base_ref, asm_file, out_dir, mode, min_len
+            return base_ref, asm_file, asm_dir, out_dir, mode, min_len
 
-        def _validate_inputs(base_ref, asm_file, out_dir):
+        def _validate_inputs(base_ref, asm_file, asm_dir, out_dir):
             ok = True
             if not base_ref:
                 app.add_log("[PAN] Base Reference FASTA is required.", error=True)
                 ok = False
-            if not asm_file:
-                app.add_log("[PAN] Assembly FASTA file is required.", error=True)
+            if not asm_file and not asm_dir:
+                app.add_log("[PAN] Provide either a FASTA file OR a folder of FASTA files.", error=True)
+                ok = False
+            if asm_file and asm_dir:
+                app.add_log("[PAN] Choose only one assemblies input: file OR folder.", error=True)
                 ok = False
             if not out_dir:
                 app.add_log("[PAN] Output folder is required.", error=True)
@@ -256,58 +270,42 @@ def page_pangenome_builder(app, parent):
                 dpg.configure_item("pan_use_ref_spinner", show=is_busy)
 
         def on_build_pangenome(sender=None, app_data=None, user_data=None):
-            base_ref, asm_file, out_dir, mode, min_len = _get_vals()
+            base_ref, asm_file, asm_dir, out_dir, mode, min_len = _get_vals()
 
             app.ensure_log_window(show=True)
-            if not _validate_inputs(base_ref, asm_file, out_dir):
+            if not _validate_inputs(base_ref, asm_file, asm_dir, out_dir):
                 return
 
             _busy_build(True)
             app.add_log("[PAN] Build started.")
 
             def task():
-                tmp_dir = None
-
                 def logger(msg):
                     app.ui_emit(app.add_log, msg)
 
-                try:
-                    tmp_dir = tempfile.mkdtemp(prefix="plantvarfilter_pan_")
-                    dst = os.path.join(tmp_dir, os.path.basename(asm_file))
+                assemblies_input = asm_file if asm_file else asm_dir
+                threads = int(os.environ.get("PLANTVARFILTER_THREADS", "8"))
+                batch_size = 20 if str(mode).lower().startswith("full") else None
 
-                    try:
-                        os.symlink(asm_file, dst)
-                    except Exception:
-                        shutil.copy2(asm_file, dst)
+                res = build_pangenome_graph(
+                    base_reference_fasta=base_ref,
+                    assemblies_input=assemblies_input,
+                    output_dir=out_dir,
+                    mode=str(mode),
+                    subset_n=25,
+                    threads=threads,
+                    min_contig_len=int(min_len) if min_len is not None else 0,
+                    minigraph_preset="ggs",
+                    batch_size=batch_size,
+                    logger=logger,
+                )
+                return res
 
-                    res = build_pangenome_mvp(
-                        base_reference_fasta=base_ref,
-                        assemblies_dir=tmp_dir,
-                        output_dir=out_dir,
-                        mode=str(mode),
-                        min_contig_len=int(min_len) if min_len is not None else 0,
-                        logger=logger,
-                    )
-                    return (res, tmp_dir)
-                except Exception:
-                    if tmp_dir and os.path.isdir(tmp_dir):
-                        try:
-                            shutil.rmtree(tmp_dir, ignore_errors=True)
-                        except Exception:
-                            pass
-                    raise
-
-            def on_done(payload):
-                res, tmp_dir = payload
-                try:
-                    if tmp_dir and os.path.isdir(tmp_dir):
-                        shutil.rmtree(tmp_dir, ignore_errors=True)
-                except Exception:
-                    pass
-
-                app._pan_last_fasta = res.pangenome_fasta
-                app.add_log(f"[PAN] Output FASTA: {res.pangenome_fasta}")
+            def on_done(res):
+                app._pan_last_gfa = res.pangenome_gfa
+                app.add_log(f"[PAN] Output GFA: {res.pangenome_gfa}")
                 app.add_log(f"[PAN] Report: {res.report_txt}")
+                app.add_log(f"[PAN] Log: {res.log_txt}")
                 app.add_log("[PAN] Build finished ✔")
                 _busy_build(False)
 
@@ -318,19 +316,20 @@ def page_pangenome_builder(app, parent):
             app.run_task("pangenome_build", task, on_done=on_done, on_error=on_error)
 
         def on_use_as_reference(sender=None, app_data=None, user_data=None):
-            base_ref, asm_file, out_dir, mode, min_len = _get_vals()
-            if not out_dir:
+            gfa = (getattr(app, "_pan_last_gfa", "") or "").strip()
+            if not gfa:
                 app.ensure_log_window(show=True)
-                app.add_log("[PAN] Output folder is required.", error=True)
+                app.add_log("[PAN] No pangenome GFA found. Build first.", error=True)
                 return
 
             _busy_use(True)
             try:
                 app.ensure_log_window(show=True)
-                if hasattr(app, "use_pangenome_as_reference") and callable(getattr(app, "use_pangenome_as_reference")):
-                    app.use_pangenome_as_reference(out_dir=out_dir)
+                if hasattr(app, "use_reference") and callable(getattr(app, "use_reference")):
+                    app.use_reference(reference_path=gfa, reference_type="gfa")
+                    app.add_log(f"[PAN] Reference set: {gfa}")
                 else:
-                    app.add_log("[PAN] Backend not wired yet: implement GWASApp.use_pangenome_as_reference().", warn=True)
+                    app.add_log("[PAN] Backend not wired yet: implement GWASApp.use_reference(reference_path, reference_type).", warn=True)
             except Exception as exc:
                 app.add_log(f"[PAN] Error: {exc}", error=True)
             finally:
@@ -344,7 +343,7 @@ def page_pangenome_builder(app, parent):
                 tag="pan_build_btn",
             )
             with dpg.tooltip(build_btn):
-                dpg.add_text("Build the pangenome outputs into the selected output folder.")
+                dpg.add_text("Build the pangenome graph (GFA) into the selected output folder.")
 
             use_btn = dpg.add_button(
                 label="Use as Reference",
@@ -353,7 +352,7 @@ def page_pangenome_builder(app, parent):
                 tag="pan_use_ref_btn",
             )
             with dpg.tooltip(use_btn):
-                dpg.add_text("Set the generated pangenome FASTA as the active reference for downstream steps.")
+                dpg.add_text("Set the generated pangenome GFA as the active reference for downstream steps.")
 
             dpg.add_loading_indicator(
                 tag="pan_build_spinner",
