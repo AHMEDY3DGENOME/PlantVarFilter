@@ -2,22 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Union, Callable
-import os
+from typing import List, Optional, Union, Callable
 import time
 import subprocess
-
 
 FASTA_EXTS = (".fa", ".fasta", ".fna")
 
 
-# -----------------------------
-# Results
-# -----------------------------
 @dataclass
 class PangenomeBuildResult:
-    # output artifacts (either gfa or fasta depending on engine)
     pangenome_gfa: Optional[str] = None
+    pangenome_vg: Optional[str] = None
     pangenome_fasta: Optional[str] = None
 
     report_txt: str = ""
@@ -33,9 +28,6 @@ class PangenomeBuildResult:
     elapsed_seconds: float = 0.0
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
 def _log(logger: Optional[Callable[[str], None]], msg: str) -> None:
     if logger:
         logger(msg)
@@ -43,27 +35,11 @@ def _log(logger: Optional[Callable[[str], None]], msg: str) -> None:
         print(msg)
 
 
-def _require_tool(tool: str) -> None:
-    p = subprocess.run(["bash", "-lc", f"command -v {tool} >/dev/null 2>&1"], text=True)
+def _require_tool(tool: str) -> str:
+    p = subprocess.run(["bash", "-lc", f"command -v {tool}"], text=True, capture_output=True)
     if p.returncode != 0:
         raise RuntimeError(f"Required tool not found in PATH: {tool}")
-
-
-def _run_cmd(cmd: List[str], log_file: Path, cwd: Optional[Path] = None,
-             logger: Optional[Callable[[str], None]] = None) -> None:
-    _log(logger, f"[PAN] RUN: {' '.join(cmd)}")
-    with log_file.open("a", encoding="utf-8") as lf:
-        lf.write("\n" + "=" * 90 + "\n")
-        lf.write("CMD: " + " ".join(cmd) + "\n")
-        p = subprocess.run(
-            cmd,
-            cwd=str(cwd) if cwd else None,
-            stdout=lf,
-            stderr=lf,
-            text=True
-        )
-    if p.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(cmd)} (see log: {log_file})")
+    return p.stdout.strip()
 
 
 def _is_fasta(p: Path) -> bool:
@@ -76,12 +52,6 @@ def _list_fastas_in_dir(dir_path: Path) -> List[Path]:
 
 
 def _resolve_assemblies_input(assemblies_input: Union[str, List[str]]) -> List[Path]:
-    """
-    Supports:
-      - folder containing FASTA files
-      - single FASTA file (multi-fasta allowed)
-      - list of FASTA file paths
-    """
     if isinstance(assemblies_input, list):
         paths = [Path(x).expanduser().resolve() for x in assemblies_input]
         for p in paths:
@@ -109,91 +79,148 @@ def _resolve_assemblies_input(assemblies_input: Union[str, List[str]]) -> List[P
     raise ValueError(f"Unsupported assemblies_input: {assemblies_input}")
 
 
-def _iter_fasta_records(path: Path):
-    header = None
-    seq_chunks: List[str] = []
-    with path.open("r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith(">"):
-                if header is not None:
-                    yield header, "".join(seq_chunks)
-                header = line[1:].strip()
-                seq_chunks = []
-            else:
-                seq_chunks.append(line)
-        if header is not None:
-            yield header, "".join(seq_chunks)
+def _pick_backbone(paths: List[Path], strategy: str = "largest") -> Path:
+    if not paths:
+        raise ValueError("No FASTA inputs provided.")
+    st = (strategy or "").strip().lower()
+    if st in ("first", "input_order"):
+        return paths[0]
+    if st in ("largest", "biggest", "max_size"):
+        return max(paths, key=lambda p: p.stat().st_size)
+    raise ValueError(f"Unsupported backbone_strategy: {strategy}")
 
 
-def _sanitize_sample_name(p: Path) -> str:
-    name = p.stem
-    safe = []
-    for ch in name:
-        if ch.isalnum() or ch in ("_", "-", "."):
-            safe.append(ch)
-        else:
-            safe.append("_")
-    s = "".join(safe)
-    return s[:80] if s else "sample"
+def _rc_human(rc: int) -> str:
+    if rc == 0:
+        return "0 (success)"
+    if rc > 0:
+        return f"{rc} (non-zero exit code)"
+    # negative => killed by signal
+    return f"{rc} (killed by signal {abs(rc)})"
 
 
-def _samtools_faidx(fa: Path, log_file: Path, logger: Optional[Callable[[str], None]] = None) -> None:
-    _run_cmd(["samtools", "faidx", str(fa)], log_file=log_file, logger=logger)
+def _likely_oom(rc: int, log_tail: str) -> bool:
+    # Typical SIGKILL patterns and hints in logs
+    if rc in (-9, 137):
+        return True
+    lt = (log_tail or "").lower()
+    if "out of memory" in lt or "killed process" in lt or "oom" in lt:
+        return True
+    return False
 
 
-def _write_renamed_fasta(
-    in_fa: Path,
-    out_fa: Path,
-    sample_prefix: str,
-    min_contig_len: int = 0,
-) -> Tuple[int, int]:
+def _tail_text(path: Path, n_lines: int = 80) -> str:
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        return "\n".join(lines[-n_lines:])
+    except Exception:
+        return ""
+
+
+def _run_cmd_capture(
+    cmd: List[str],
+    log_file: Path,
+    stdout_to_file: Optional[Path] = None,
+    cwd: Optional[Path] = None,
+    logger: Optional[Callable[[str], None]] = None,
+    use_time_v: bool = True,
+) -> int:
     """
-    Rename headers to avoid collisions:
-      >{sample_prefix}__{original_header}
+    Runs a command and appends verbose logs.
+    - Writes CMD + timestamps + EXIT_CODE into log_file
+    - If stdout_to_file is provided, stdout is redirected to that file, stderr goes to log_file
+    - If /usr/bin/time exists and use_time_v=True, wraps the command with `/usr/bin/time -v`
+      to capture Max RSS/CPU/elapsed in the same log file (very useful to debug OOM).
     """
-    seqs = 0
-    bases = 0
-    with out_fa.open("w", encoding="utf-8") as out:
-        for h, s in _iter_fasta_records(in_fa):
-            if min_contig_len and len(s) < int(min_contig_len):
-                continue
-            nh = f"{sample_prefix}__{h}"
-            out.write(f">{nh}\n{s}\n")
-            seqs += 1
-            bases += len(s)
-    return seqs, bases
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    if stdout_to_file is not None:
+        stdout_to_file.parent.mkdir(parents=True, exist_ok=True)
+
+    start_ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    _log(logger, f"[PAN] RUN: {' '.join(cmd)}")
+    _log(logger, f"[PAN] Log file: {log_file}")
+
+    # Build a bash command string so we can do redirects + optional /usr/bin/time -v cleanly
+    # NOTE: we keep stderr in log_file; stdout either goes to file or log.
+    safe_cmd = " ".join([subprocess.list2cmdline([c]) if " " in c else c for c in cmd])
+    # The above is conservative but not perfect for edge chars; your inputs are file paths so OK.
+
+    time_prefix = ""
+    if use_time_v:
+        # use absolute /usr/bin/time if available; fallback silently if missing
+        time_prefix = 'command -v /usr/bin/time >/dev/null 2>&1 && TIMEP="/usr/bin/time -v" || TIMEP="" ; '
+
+    if stdout_to_file is None:
+        bash_line = f'{time_prefix} $TIMEP {safe_cmd}'
+    else:
+        bash_line = f'{time_prefix} $TIMEP {safe_cmd} 1> "{stdout_to_file}"'
+
+    with log_file.open("a", encoding="utf-8") as lf:
+        lf.write("\n" + "=" * 110 + "\n")
+        lf.write(f"START: {start_ts}\n")
+        lf.write("CWD:   " + (str(cwd) if cwd else "<none>") + "\n")
+        lf.write("CMD:   " + " ".join(cmd) + "\n")
+        lf.write("-" * 110 + "\n")
+        lf.flush()
+
+        p = subprocess.run(
+            ["bash", "-lc", bash_line],
+            cwd=str(cwd) if cwd else None,
+            stdout=lf if stdout_to_file is None else subprocess.DEVNULL,
+            stderr=lf,
+            text=True,
+        )
+
+        end_ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        lf.write("-" * 110 + "\n")
+        lf.write(f"END:       {end_ts}\n")
+        lf.write(f"EXIT_CODE: {p.returncode}\n")
+        lf.write(f"EXIT_HUMAN:{_rc_human(p.returncode)}\n")
+        lf.flush()
+
+    # Push a short, visible status into the UI log immediately
+    _log(logger, f"[PAN] EXIT: {_rc_human(p.returncode)}")
+
+    if stdout_to_file is not None:
+        sz = stdout_to_file.stat().st_size if stdout_to_file.exists() else 0
+        _log(logger, f"[PAN] STDOUT file: {stdout_to_file} (size={sz})")
+
+    # If failed, surface a short tail of the log to UI (very important for “not fake logs”)
+    if p.returncode != 0:
+        tail = _tail_text(log_file, n_lines=60)
+        if tail.strip():
+            _log(logger, "[PAN] --- log tail (last 60 lines) ---")
+            for line in tail.splitlines()[-60:]:
+                _log(logger, line)
+            _log(logger, "[PAN] --- end log tail ---")
+
+        if _likely_oom(p.returncode, tail):
+            _log(
+                logger,
+                "[PAN][OOM] The process was likely killed by the kernel due to Out-Of-Memory (OOM). "
+                "Try: reduce threads (PLANTVARFILTER_THREADS=1 or 2), close heavy apps, or add swap.",
+            )
+
+    return p.returncode
 
 
-# -----------------------------
-# Engine 1: Graph (GFA) via minigraph
-# -----------------------------
 def build_pangenome_graph(
-    base_reference_fasta: str,
     assemblies_input: Union[str, List[str]],
     output_dir: str,
-    mode: str = "full",               # "full" or "fast"
+    mode: str = "full",
     subset_n: int = 25,
     threads: int = 8,
-    min_contig_len: int = 0,
-    minigraph_preset: str = "ggs",    # uses -xggs
-    batch_size: Optional[int] = None, # helpful for 100+ samples
+    minigraph_preset: str = "ggs",
+    backbone_strategy: str = "largest",
     logger=None,
+    vg_gzip_only: bool = False,
 ) -> PangenomeBuildResult:
-    """
-    Builds a TRUE pangenome graph reference (GFA) using minigraph:
-      minigraph -c -xggs -t THREADS ref.fa sample1.renamed.fa ... > pangenome.gfa
-    """
-
     t0 = time.time()
-    _require_tool("minigraph")
-    _require_tool("samtools")
 
-    base_ref = Path(base_reference_fasta).expanduser().resolve()
-    if not base_ref.exists() or not base_ref.is_file():
-        raise FileNotFoundError(f"Base reference FASTA not found: {base_ref}")
+    minigraph_path = _require_tool("minigraph")
+    vg_path = _require_tool("vg")
 
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -202,321 +229,133 @@ def build_pangenome_graph(
     report_txt = out_dir / "pangenome_graph_report.txt"
     log_txt.write_text("", encoding="utf-8")
 
-    work_dir = out_dir / "_pan_work"
-    renamed_dir = out_dir / "renamed_inputs"
-    work_dir.mkdir(parents=True, exist_ok=True)
-    renamed_dir.mkdir(parents=True, exist_ok=True)
-
-    _log(logger, f"[PAN] Graph build (minigraph) started")
-    _log(logger, f"[PAN] Reference: {base_ref}")
-    _samtools_faidx(base_ref, log_file=log_txt, logger=logger)
+    _log(logger, "[PAN] Direct build started (minigraph -> GFA, vg convert -> VG)")
+    _log(logger, f"[PAN] which minigraph: {minigraph_path}")
+    _log(logger, f"[PAN] which vg:       {vg_path}")
+    _log(logger, f"[PAN] output_dir:     {out_dir}")
+    _log(logger, f"[PAN] threads:        {threads}")
+    _log(logger, f"[PAN] vg_gzip_only:   {vg_gzip_only}")
 
     inputs = _resolve_assemblies_input(assemblies_input)
 
     selected = inputs
     if str(mode).lower().startswith("fast") and len(inputs) > subset_n:
         selected = sorted(inputs, key=lambda p: p.stat().st_size, reverse=True)[:subset_n]
+        _log(logger, f"[PAN] Mode=FAST: selected top {len(selected)}/{len(inputs)} by size")
+    else:
+        _log(logger, f"[PAN] Mode=FULL: selected all {len(selected)} inputs")
 
-    renamed_inputs: List[str] = []
-    inputs_used: List[str] = []
+    if len(selected) < 2:
+        raise ValueError("Need at least 2 FASTA inputs to build a pangenome graph with minigraph.")
 
-    total_seqs = 0
-    total_bases = 0
-    skipped: List[str] = []
+    backbone = _pick_backbone(selected, strategy=backbone_strategy)
+    samples = [p for p in selected if p != backbone]
 
-    # prepare renamed sample fastas
-    for fa in selected:
-        sample = _sanitize_sample_name(fa)
-        out_fa = renamed_dir / f"{sample}.renamed.fa"
-        try:
-            seqs, bases = _write_renamed_fasta(fa, out_fa, sample_prefix=sample, min_contig_len=min_contig_len)
-            if seqs == 0:
-                skipped.append(str(fa))
-                _log(logger, f"[PAN] Skipped (empty after filters): {fa.name}")
-                continue
-            _samtools_faidx(out_fa, log_file=log_txt, logger=logger)
-            renamed_inputs.append(str(out_fa))
-            inputs_used.append(str(fa))
-            total_seqs += seqs
-            total_bases += bases
-            _log(logger, f"[PAN] Prepared: {fa.name} -> {out_fa.name} | seqs={seqs} bases={bases}")
-        except Exception as exc:
-            skipped.append(str(fa))
-            _log(logger, f"[PAN] Skipped due to error: {fa.name} | {exc}")
-
-    if not renamed_inputs:
-        raise ValueError("No valid input sequences after preparation (check min_contig_len and FASTA validity).")
+    _log(logger, f"[PAN] Backbone: {backbone}")
+    _log(logger, f"[PAN] Samples:  {len(samples)} file(s)")
 
     gfa_out = out_dir / "pangenome.gfa"
-    xflag = f"-x{minigraph_preset}"
+    vg_out = out_dir / "pangenome.vg"
+    vgz_out = out_dir / "pangenome.vg.gz"
+
+    xflag = f"-x{minigraph_preset}".strip()
     if not xflag.startswith("-x"):
         xflag = "-xggs"
 
-    def _run_minigraph(sample_fastas: List[str], out_gfa: Path) -> None:
-        cmd = ["minigraph", "-c", xflag, "-t", str(max(1, int(threads))), str(base_ref)] + sample_fastas
-        _log(logger, f"[PAN] RUN: {' '.join(cmd)} > {out_gfa}")
-        with out_gfa.open("w", encoding="utf-8") as out_handle:
-            with log_txt.open("a", encoding="utf-8") as lf:
-                lf.write("\n" + "=" * 90 + "\n")
-                lf.write("CMD: " + " ".join(cmd) + f" > {out_gfa}\n")
-                p = subprocess.run(cmd, stdout=out_handle, stderr=lf, text=True)
-        if p.returncode != 0:
-            raise RuntimeError(f"minigraph failed (see log): {log_txt}")
+    cmd_mg = ["minigraph", "-c", xflag, "-t", str(max(1, int(threads))), str(backbone)] + [str(p) for p in samples]
 
-    # batching (optional, helps with memory)
-    if batch_size and batch_size > 0 and len(renamed_inputs) > batch_size:
-        _log(logger, f"[PAN] Batch mode ON (batch_size={batch_size})")
-        current: List[str] = []
-        batch_idx = 0
-        for i in range(0, len(renamed_inputs), batch_size):
-            batch_idx += 1
-            current.extend(renamed_inputs[i:i + batch_size])
-            tmp = out_dir / f"pangenome.batch_{batch_idx}.gfa"
-            _run_minigraph(current, tmp)
-        # last batch becomes final
-        tmp.replace(gfa_out)
-    else:
-        _run_minigraph(renamed_inputs, gfa_out)
+    _log(logger, f"[PAN] Step 1/2: minigraph -> {gfa_out}")
+    rc = _run_cmd_capture(cmd_mg, log_file=log_txt, stdout_to_file=gfa_out, logger=logger, use_time_v=True)
+    if rc != 0:
+        raise RuntimeError(f"minigraph failed: {_rc_human(rc)}. See log: {log_txt}")
 
-    if not gfa_out.exists() or gfa_out.stat().st_size < 1024:
-        raise RuntimeError("GFA output missing/too small. Check log.")
+    gfa_size = gfa_out.stat().st_size if gfa_out.exists() else 0
+    _log(logger, f"[PAN] GFA written: {gfa_out} (size={gfa_size})")
+    if gfa_size < 1024:
+        tail = _tail_text(log_txt, n_lines=80)
+        raise RuntimeError(
+            f"GFA output is missing/too small (size={gfa_size}). "
+            f"See log: {log_txt}\n"
+            f"--- log tail ---\n{tail}\n--- end ---"
+        )
+
+    _log(logger, f"[PAN] Step 2/2: vg convert -> {vg_out}")
+    cmd_vg = ["vg", "convert", "-g", "-p", str(gfa_out)]
+    rc2 = _run_cmd_capture(cmd_vg, log_file=log_txt, stdout_to_file=vg_out, logger=logger, use_time_v=True)
+    if rc2 != 0:
+        raise RuntimeError(f"vg convert failed: {_rc_human(rc2)}. See log: {log_txt}")
+
+    vg_size = vg_out.stat().st_size if vg_out.exists() else 0
+    _log(logger, f"[PAN] VG written: {vg_out} (size={vg_size})")
+    if vg_size < 1024:
+        tail = _tail_text(log_txt, n_lines=80)
+        raise RuntimeError(
+            f"VG output is missing/too small (size={vg_size}). See log: {log_txt}\n"
+            f"--- log tail ---\n{tail}\n--- end ---"
+        )
+
+    final_vg_path = vg_out
+
+    if vg_gzip_only:
+        _log(logger, f"[PAN] Step 3/3: gzip -> {vgz_out}")
+        cmd_gz = ["gzip", "-c", str(vg_out)]
+        rc3 = _run_cmd_capture(cmd_gz, log_file=log_txt, stdout_to_file=vgz_out, logger=logger, use_time_v=True)
+        if rc3 != 0:
+            raise RuntimeError(f"gzip failed: {_rc_human(rc3)}. See log: {log_txt}")
+
+        vgz_size = vgz_out.stat().st_size if vgz_out.exists() else 0
+        _log(logger, f"[PAN] VG.GZ written: {vgz_out} (size={vgz_size})")
+        if vgz_size < 1024:
+            tail = _tail_text(log_txt, n_lines=80)
+            raise RuntimeError(
+                f"VG.GZ output is missing/too small (size={vgz_size}). See log: {log_txt}\n"
+                f"--- log tail ---\n{tail}\n--- end ---"
+            )
+
+        try:
+            vg_out.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        final_vg_path = vgz_out
 
     dt = time.time() - t0
 
     with report_txt.open("w", encoding="utf-8") as rep:
-        rep.write("PlantVarFilter - Pangenome Graph Builder (minigraph)\n")
-        rep.write(f"Reference FASTA: {base_ref}\n")
+        rep.write("PlantOmicsGwas - Pangenome Graph Builder (Direct)\n")
         rep.write(f"Assemblies input: {assemblies_input}\n")
         rep.write(f"Output dir: {out_dir}\n")
         rep.write(f"Mode: {mode}\n")
         rep.write(f"Subset N: {subset_n}\n")
         rep.write(f"Threads: {threads}\n")
-        rep.write(f"Min contig len: {min_contig_len}\n")
         rep.write(f"minigraph preset: {minigraph_preset} ({xflag})\n")
-        rep.write(f"Batch size: {batch_size}\n")
+        rep.write(f"Backbone strategy: {backbone_strategy}\n")
+        rep.write(f"Backbone: {backbone}\n")
         rep.write(f"Inputs found: {len(inputs)}\n")
         rep.write(f"Inputs selected: {len(selected)}\n")
-        rep.write(f"Inputs used: {len(inputs_used)}\n")
-        rep.write(f"Inputs skipped: {len(skipped)}\n")
-        rep.write(f"Sample sequences kept: {total_seqs}\n")
-        rep.write(f"Sample bases kept: {total_bases}\n")
-        rep.write(f"Pangenome GFA: {gfa_out}\n")
+        rep.write(f"Pangenome GFA: {gfa_out} (size={gfa_size})\n")
+        if vg_gzip_only:
+            rep.write(f"Pangenome VG.GZ: {vgz_out} (size={vgz_out.stat().st_size if vgz_out.exists() else 0})\n")
+        else:
+            rep.write(f"Pangenome VG: {vg_out} (size={vg_size})\n")
         rep.write(f"Log: {log_txt}\n")
-        rep.write(f"Elapsed seconds: {dt:.2f}\n\n")
-        rep.write("Inputs used:\n")
-        for p in inputs_used:
-            rep.write(f"- {p}\n")
-        if skipped:
-            rep.write("\nSkipped:\n")
-            for p in skipped:
-                rep.write(f"- {p}\n")
-        rep.write("\nRenamed inputs:\n")
-        for p in renamed_inputs:
-            rep.write(f"- {p}\n")
+        rep.write(f"Elapsed seconds: {dt:.2f}\n")
 
-    _log(logger, f"[PAN] Done ✔ GFA: {gfa_out}")
-    _log(logger, f"[PAN] Report: {report_txt}")
-    _log(logger, f"[PAN] Log: {log_txt}")
+    _log(logger, f"[PAN] Done ✔ elapsed={dt:.2f}s")
+    _log(logger, f"[PAN] Outputs: {gfa_out} , {final_vg_path}")
 
     return PangenomeBuildResult(
         pangenome_gfa=str(gfa_out),
+        pangenome_vg=str(final_vg_path),
         pangenome_fasta=None,
         report_txt=str(report_txt),
         log_txt=str(log_txt),
-        inputs_used=inputs_used,
-        renamed_inputs=renamed_inputs,
-        included_files=inputs_used,
-        skipped_files=skipped,
-        total_sequences_written=total_seqs,
-        total_bases_written=total_bases,
-        elapsed_seconds=dt,
-    )
-
-
-# -----------------------------
-# Engine 2: Pan-FASTA (novel contigs) - optional legacy/quick
-# (You can keep your older idea but name it correctly.)
-# -----------------------------
-def build_pan_fasta_novel_contigs(
-    base_reference_fasta: str,
-    assemblies_dir: str,
-    output_dir: str,
-    mode: str = "Fast (subset 25)",
-    min_contig_len: int = 1000,
-    novelty_cov_threshold: float = 0.70,
-    threads: int = 8,
-    minimap2_preset: str = "asm5",
-    logger=None,
-) -> PangenomeBuildResult:
-    """
-    Builds a LINEAR pan-FASTA by appending contigs considered "novel" (low coverage vs reference).
-    This is NOT a graph pangenome.
-    """
-
-    def _merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-        if not intervals:
-            return []
-        intervals.sort()
-        merged = [intervals[0]]
-        for s, e in intervals[1:]:
-            ps, pe = merged[-1]
-            if s <= pe:
-                merged[-1] = (ps, max(pe, e))
-            else:
-                merged.append((s, e))
-        return merged
-
-    def _paf_query_coverage(paf_path: Path) -> Dict[str, float]:
-        intervals_by_q: Dict[str, List[Tuple[int, int]]] = {}
-        qlen_by_q: Dict[str, int] = {}
-
-        with paf_path.open("r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                parts = line.rstrip("\n").split("\t")
-                if len(parts) < 12:
-                    continue
-                qname = parts[0]
-                qlen = int(parts[1])
-                qstart = int(parts[2])
-                qend = int(parts[3])
-                qlen_by_q[qname] = qlen
-                intervals_by_q.setdefault(qname, []).append((qstart, qend))
-
-        cov: Dict[str, float] = {}
-        for qname, intervals in intervals_by_q.items():
-            qlen = qlen_by_q.get(qname, 0)
-            if qlen <= 0:
-                cov[qname] = 0.0
-                continue
-            merged = _merge_intervals(intervals)
-            covered = sum(e - s for s, e in merged)
-            cov[qname] = covered / float(qlen)
-        return cov
-
-    def _run_minimap2_paf(ref_fa: Path, qry_fa: Path, paf_out: Path) -> None:
-        cmd = ["minimap2", "-x", minimap2_preset, "-t", str(max(1, int(threads))),
-               "--secondary=no", str(ref_fa), str(qry_fa)]
-        _run_cmd(cmd, log_file=log_txt, logger=logger)
-        # minimap2 PAF to stdout; re-run capturing stdout
-        with paf_out.open("w", encoding="utf-8") as out:
-            p = subprocess.run(cmd, stdout=out, stderr=subprocess.PIPE, text=True)
-        if p.returncode != 0:
-            raise RuntimeError(p.stderr.strip())
-
-    t0 = time.time()
-    _require_tool("minimap2")
-
-    base_ref = Path(base_reference_fasta).expanduser().resolve()
-    asm_dir = Path(assemblies_dir).expanduser().resolve()
-    out_dir = Path(output_dir).expanduser().resolve()
-
-    if not base_ref.exists() or not base_ref.is_file():
-        raise FileNotFoundError(f"Base reference FASTA not found: {base_ref}")
-    if not asm_dir.exists() or not asm_dir.is_dir():
-        raise FileNotFoundError(f"Assemblies folder not found: {asm_dir}")
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    log_txt = out_dir / "pan_fasta.log"
-    report = out_dir / "pan_fasta_report.txt"
-    log_txt.write_text("", encoding="utf-8")
-
-    assemblies = _list_fastas_in_dir(asm_dir)
-    if not assemblies:
-        raise ValueError(f"No FASTA assemblies found in: {asm_dir}")
-
-    chosen = assemblies
-    if str(mode).lower().startswith("fast"):
-        chosen = sorted(assemblies, key=lambda p: p.stat().st_size, reverse=True)[:25]
-
-    pan_fa = out_dir / "pangenome.fa"
-    work_dir = out_dir / "_pan_work"
-    work_dir.mkdir(parents=True, exist_ok=True)
-
-    included: List[str] = []
-    skipped: List[str] = []
-    total_seqs = 0
-    total_bases = 0
-    novel_total = 0
-
-    with pan_fa.open("w", encoding="utf-8") as out:
-        # write reference
-        for h, s in _iter_fasta_records(base_ref):
-            if min_contig_len and len(s) < int(min_contig_len):
-                continue
-            out.write(f">{h}\n{s}\n")
-            total_seqs += 1
-            total_bases += len(s)
-
-        # append "novel" contigs
-        for asm in chosen:
-            sample = _sanitize_sample_name(asm)
-            paf_path = work_dir / f"{sample}.paf"
-            try:
-                _run_minimap2_paf(base_ref, asm, paf_path)
-                cov = _paf_query_coverage(paf_path)
-
-                kept_this = 0
-                seen = 0
-
-                for h, s in _iter_fasta_records(asm):
-                    if min_contig_len and len(s) < int(min_contig_len):
-                        continue
-                    seen += 1
-                    c = cov.get(h, 0.0)
-                    is_novel = (h not in cov) or (c < novelty_cov_threshold)
-                    if not is_novel:
-                        continue
-                    nh = f"{sample}|{h}"
-                    out.write(f">{nh}\n{s}\n")
-                    total_seqs += 1
-                    total_bases += len(s)
-                    kept_this += 1
-                    novel_total += 1
-
-                if kept_this > 0:
-                    included.append(str(asm))
-                else:
-                    skipped.append(str(asm))
-
-                _log(logger, f"[PAN-FASTA] {asm.name}: scanned={seen} kept_novel={kept_this}")
-
-            except Exception as exc:
-                skipped.append(str(asm))
-                _log(logger, f"[PAN-FASTA] {asm.name}: skipped due to error: {exc}")
-
-    dt = time.time() - t0
-
-    with report.open("w", encoding="utf-8") as rep:
-        rep.write("PlantVarFilter - Pan-FASTA Builder (Novel contigs)\n")
-        rep.write(f"Base reference: {base_ref}\n")
-        rep.write(f"Assemblies dir: {asm_dir}\n")
-        rep.write(f"Output dir: {out_dir}\n")
-        rep.write(f"Mode: {mode}\n")
-        rep.write(f"Min contig len: {min_contig_len}\n")
-        rep.write(f"Novelty cov thr: {novelty_cov_threshold}\n")
-        rep.write(f"Threads: {threads}\n")
-        rep.write(f"minimap2 preset: {minimap2_preset}\n")
-        rep.write(f"Assemblies found: {len(assemblies)}\n")
-        rep.write(f"Assemblies selected: {len(chosen)}\n")
-        rep.write(f"Included files: {len(included)}\n")
-        rep.write(f"Skipped files: {len(skipped)}\n")
-        rep.write(f"Total sequences written: {total_seqs}\n")
-        rep.write(f"Total bases written: {total_bases}\n")
-        rep.write(f"Novel contigs written: {novel_total}\n")
-        rep.write(f"Elapsed seconds: {dt:.2f}\n")
-
-    return PangenomeBuildResult(
-        pangenome_gfa=None,
-        pangenome_fasta=str(pan_fa),
-        report_txt=str(report),
-        log_txt=str(log_txt),
-        inputs_used=included + skipped,
+        inputs_used=[str(p) for p in selected],
         renamed_inputs=[],
-        included_files=included,
-        skipped_files=skipped,
-        total_sequences_written=total_seqs,
-        total_bases_written=total_bases,
+        included_files=[str(p) for p in selected],
+        skipped_files=[],
+        total_sequences_written=0,
+        total_bases_written=0,
         elapsed_seconds=dt,
     )
+

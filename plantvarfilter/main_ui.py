@@ -215,6 +215,7 @@ class GWASApp:
         self._nav_items = [
             ("ref_manager", "Reference Manager"),
             ("pangenome", "Pangenome Builder"),
+            ("pangwas", "panGWAS"),
             ("fastq_qc", "FASTQ QC"),
             ("alignment", "Alignment"),
             ("pre_sam", "Preprocess (samtools)"),
@@ -1123,19 +1124,12 @@ class GWASApp:
             dpg.setup_dearpygui()
             dpg.show_viewport()
 
-            self._refresh_watermark()
-            try:
-                dpg.set_frame_callback(1, lambda: self._refresh_watermark())
-            except Exception:
-                pass
 
-            if hasattr(self, "_install_ui_poller"):
-                try:
-                    self._install_ui_poller()
-                except Exception:
-                    pass
+            while dpg.is_dearpygui_running():
+                self._ui_poll()
+                self._refresh_watermark()
+                dpg.render_dearpygui_frame()
 
-            dpg.start_dearpygui()
         finally:
             dpg.destroy_context()
 
@@ -1145,60 +1139,165 @@ class GWASApp:
         except Exception:
             pass
 
+    import queue
+
     def _ui_poll(self):
-        drained = 0
-        while drained < 200:
+        import queue
+        import time
+
+        t0 = time.time()
+        processed = 0
+        errors = 0
+
+        try:
+            q_before = self._ui_events.qsize()
+        except Exception:
+            q_before = -1
+
+        MAX_PER_TICK = 500
+
+        while processed < MAX_PER_TICK:
             try:
                 fn, args, kwargs = self._ui_events.get_nowait()
-            except Exception:
+            except queue.Empty:
                 break
+
             try:
                 fn(*args, **kwargs)
-            except Exception:
-                pass
-            drained += 1
+                processed += 1
+            except Exception as e:
+                errors += 1
+                fn_name = getattr(fn, "__name__", str(fn))
+                print(f"[UI][ERROR] event failed: fn={fn_name} err={repr(e)}")
+
+        dt_ms = (time.time() - t0) * 1000.0
+
+        try:
+            q_after = self._ui_events.qsize()
+        except Exception:
+            q_after = -1
+
+
+        if processed > 0 or q_after > 0 or errors > 0:
+            print(
+                f"[UI][POLL] processed={processed} errors={errors} "
+                f"q_before={q_before} q_after={q_after} dt={dt_ms:.2f}ms"
+            )
+
+        if q_after > 2000:
+            print(f"[UI][WARN] UI queue backlog is large: {q_after} events")
 
     def run_task(self, key: str, target, on_done=None, on_error=None):
+        import threading
+        import traceback
+        import time
+
+        # Safe UI logger (enqueue to UI thread)
+        def _uilog(msg, warn=False, error=False):
+            self.ui_emit(self.add_log, msg, warn, error)
+
+        # Prevent duplicate task
         with self._task_lock:
             t = self._active_tasks.get(key)
             if t and t.is_alive():
-                self.add_log(f"[TASK] '{key}' is already running.", warn=True)
+                _uilog(f"[TASK:{key}] already running (thread={t.name})", warn=True)
                 return
 
+        _uilog(f"[TASK:{key}] scheduling task")
+
         def _runner():
+            th = threading.current_thread()
+            start = time.time()
+
+            print(f"[TASK:{key}] THREAD STARTED | name={th.name} ident={th.ident}")
+            _uilog(f"[TASK:{key}] START thread={th.name} ident={th.ident}")
+
             try:
-                res = target()
+                _uilog(f"[TASK:{key}] calling target()")
+                result = target()
+                dt = time.time() - start
+
+                print(f"[TASK:{key}] target() returned | dt={dt:.2f}s | type={type(result).__name__}")
+                _uilog(f"[TASK:{key}] target() returned in {dt:.2f}s | type={type(result).__name__}")
+
+            except Exception as exc:
+                dt = time.time() - start
+                tb = traceback.format_exc()
+
+                print(f"[TASK:{key}] EXCEPTION | dt={dt:.2f}s\n{tb}")
+                _uilog(f"[TASK:{key}] EXCEPTION after {dt:.2f}s: {exc}", error=True)
+
+                def _emit_error():
+                    try:
+                        if on_error:
+                            self.add_log(f"[TASK:{key}] on_error() executing", warn=True)
+                            on_error(exc)
+                        else:
+                            self.add_log(f"[TASK:{key}] FAILED\n{tb}", error=True)
+                    except Exception as e2:
+                        self.add_log(f"[TASK:{key}] ERROR in on_error: {e2}", error=True)
+                        self.add_log(traceback.format_exc(), error=True)
+
+                self.ui_emit(_emit_error)
+
+            else:
                 if on_done:
-                    self.ui_emit(on_done, res)
-            except Exception as e:
-                if on_error:
-                    self.ui_emit(on_error, e)
+                    def _emit_done():
+                        try:
+                            self.add_log(f"[TASK:{key}] on_done() executing")
+                            on_done(result)
+                            self.add_log(f"[TASK:{key}] on_done() finished")
+                        except Exception as e2:
+                            self.add_log(f"[TASK:{key}] ERROR in on_done: {e2}", error=True)
+                            self.add_log(traceback.format_exc(), error=True)
+
+                    self.ui_emit(_emit_done)
                 else:
-                    tb = traceback.format_exc()
-                    self.ui_emit(self.add_log, f"[TASK] '{key}' failed: {e}\n{tb}", True, False, True)
+                    _uilog(f"[TASK:{key}] DONE (no on_done callback)", warn=True)
 
-        th = threading.Thread(target=_runner, daemon=True)
+            finally:
+                dt = time.time() - start
+                with self._task_lock:
+                    self._active_tasks.pop(key, None)
+
+                try:
+                    qsize = self._ui_events.qsize()
+                except Exception:
+                    qsize = -1
+
+                print(f"[TASK:{key}] CLEANUP | dt={dt:.2f}s | ui_queue={qsize}")
+                _uilog(f"[TASK:{key}] CLEANUP done in {dt:.2f}s | ui_queue={qsize}")
+
+        thread = threading.Thread(
+            target=_runner,
+            daemon=True,
+            name=f"task:{key}"
+        )
+
         with self._task_lock:
-            self._active_tasks[key] = th
-        th.start()
+            self._active_tasks[key] = thread
 
-    def _install_ui_poller(self):
-        if hasattr(dpg, "set_render_callback"):
-            dpg.set_render_callback(lambda: self._ui_poll())
-            return
+        _uilog(f"[TASK:{key}] thread created -> {thread.name}")
+        thread.start()
+        _uilog(f"[TASK:{key}] thread.start() called")
 
-        def _tick():
-            self._ui_poll()
-            try:
-                dpg.set_frame_callback(1, lambda: _tick())
-            except Exception:
-                pass
-
-        try:
-            dpg.set_frame_callback(1, lambda: _tick())
-        except Exception:
-            pass
-
+    # def _install_ui_poller(self):
+    #     def _tick():
+    #         try:
+    #             self._ui_poll()
+    #         except Exception as e:
+    #             print("[UI][ERROR] poll failed:", e)
+    #         finally:
+    #             try:
+    #                 dpg.set_frame_callback(dpg.get_frame_count() + 1, _tick)
+    #             except Exception as e:
+    #                 print("[UI][ERROR] poller stopped:", e)
+    #
+    #     try:
+    #         dpg.set_frame_callback(1, _tick)
+    #         print("[UI] poller started")
+    #     except Exception as e:
+    #         print("[UI][ERROR] failed to start poller:", e)
 
     def _hook_viewport_resize(self):
         if hasattr(dpg, "add_viewport_resize_handler"):
@@ -1214,35 +1313,26 @@ class GWASApp:
         self._refresh_watermark()
 
     def _refresh_watermark(self):
+        if not dpg.does_item_exist("content_area"):
+            return
+
+        from .ui.watermark import setup as setup_watermark, place_signature as setup_lab_signature
+
         try:
-            if not dpg.does_item_exist("content_area"):
-                return
-
-            from .ui.watermark import setup as setup_watermark, place_signature as setup_lab_signature
-
-            def _place():
-                try:
-                    setup_watermark(
-                        alpha=self._wm_alpha,
-                        scale=self._wm_scale,
-                        target_window_tag="content_area",
-                        front=True,
-                    )
-                    setup_lab_signature(
-                        target_window_tag="content_area",
-                        image_name="logo_lab.png",
-                        width=240,
-                        margin=(16, 16),
-                    )
-                except Exception as ex:
-                    self.add_log(f"[wm] draw failed: {ex}", warn=True)
-
-                dpg.set_frame_callback(dpg.get_frame_count() + 10, _place)
-
-            dpg.set_frame_callback(dpg.get_frame_count() + 1, _place)
-
-        except Exception as e:
-            self.add_log(f"[wm] refresh failed: {e}", warn=True)
+            setup_watermark(
+                alpha=self._wm_alpha,
+                scale=self._wm_scale,
+                target_window_tag="content_area",
+                front=True,
+            )
+            setup_lab_signature(
+                target_window_tag="content_area",
+                image_name="logo_lab.png",
+                width=240,
+                margin=(16, 16),
+            )
+        except Exception as ex:
+            self.add_log(f"[wm] draw failed: {ex}", warn=True)
 
     def _on_font_scale_change(self, sender, value):
         try:
@@ -1349,21 +1439,31 @@ class GWASApp:
         vcf_path, current_path = self.get_selection_path(self.vcf_app_data)
         if not vcf_path:
             return
+
         self._set_workspace_dir(os.path.dirname(vcf_path))
         dpg.configure_item("file_dialog_variants", default_path=current_path or self.default_path)
         self.add_log('VCF Selected: ' + vcf_path)
+
         name = self._fmt_name(vcf_path)
+
+        # existing labels (other pages)
         for tag in ("qc_vcf_path_lbl", "conv_vcf_path_lbl", "bcf_vcf_path_lbl"):
             self._set_text(tag, name)
+
+        # ADD THIS (panGWAS needs FULL PATH)
+        self._set_text("pangwas_vcf_path_lbl", vcf_path)
 
     def callback_vcf2(self, s, app_data):
         self.vcf2_app_data = app_data
         vcf_path, current_path = self.get_selection_path(self.vcf2_app_data)
         if not vcf_path:
             return
+
         self._set_workspace_dir(os.path.dirname(vcf_path))
         dpg.configure_item("file_dialog_variants", default_path=current_path or self.default_path)
         self.add_log('VCF#2 Selected: ' + vcf_path)
+
+        # QC only (not used in panGWAS)
         self._set_text("qc_vcf2_path_lbl", self._fmt_name(vcf_path))
 
     def callback_bed(self, s, app_data):
@@ -2764,6 +2864,100 @@ class GWASApp:
                         for col in df_top.columns:
                             v = r[col]
                             dpg.add_text(f"{v:.6g}" if isinstance(v, float) else str(v))
+    #========== PAN-GWAS ====================
+    def results_clear(self, title: str = "Results", show: bool = True):
+        """Clear and open the Results window body."""
+        self.ensure_results_window(show=show, title=title)
+        if self._results_body and dpg.does_item_exist(self._results_body):
+            dpg.delete_item(self._results_body, children_only=True)
+
+    def results_add_export_button(self):
+        """Add standard export button to Results."""
+        if self._results_body and dpg.does_item_exist(self._results_body):
+            dpg.add_button(label="Export Results", parent=self._results_body,
+                           callback=lambda: dpg.show_item("select_directory"))
+            dpg.add_spacer(height=10, parent=self._results_body)
+
+    def results_add_text(self, text: str):
+        if self._results_body and dpg.does_item_exist(self._results_body):
+            dpg.add_text(text, parent=self._results_body)
+
+    def results_add_dataframe_table(self, df, title: str = "", max_rows: int = 500):
+        """Render a pandas DataFrame as a DPG table in Results."""
+        if not self._results_body or not dpg.does_item_exist(self._results_body):
+            self.ensure_results_window(show=True, title="Results")
+        if title:
+            dpg.add_text(title, parent=self._results_body)
+            dpg.add_spacer(height=6, parent=self._results_body)
+
+        # safety: limit rows
+        try:
+            import pandas as pd
+            if hasattr(df, "shape"):
+                df_show = df.head(max_rows)
+            else:
+                df_show = pd.DataFrame(df).head(max_rows)
+        except Exception:
+            df_show = df
+
+        tag = f"table_generic_{int(time.time() * 1000)}"
+        with dpg.table(
+                row_background=True,
+                borders_innerH=True,
+                borders_outerH=True,
+                borders_innerV=True,
+                borders_outerV=True,
+                resizable=True,
+                sortable=True,
+                parent=self._results_body,
+                tag=tag
+        ):
+            cols = list(df_show.columns)
+            for c in cols:
+                dpg.add_table_column(label=str(c))
+            for _, r in df_show.iterrows():
+                with dpg.table_row():
+                    for c in cols:
+                        v = r[c]
+                        # format floats nicely
+                        if isinstance(v, float):
+                            dpg.add_text(f"{v:.6g}")
+                        else:
+                            dpg.add_text(str(v))
+
+    def results_add_csv(self, csv_path: str, title: str = "", max_rows: int = 500):
+        """Load CSV and render it as a table in Results."""
+        import os
+        if not csv_path or not os.path.exists(csv_path):
+            self.add_log(f"[RESULTS] CSV not found: {csv_path}", error=True)
+            return
+        try:
+            import pandas as pd
+            df = pd.read_csv(csv_path)
+            self.results_add_dataframe_table(df, title=title or os.path.basename(csv_path), max_rows=max_rows)
+            self.results_add_text(f"File: {csv_path}")
+        except Exception as e:
+            self.add_log(f"[RESULTS] Failed to render CSV: {e}", warn=True)
+            self.results_add_text(f"CSV: {csv_path}")
+
+    def results_add_image(self, img_path: str, label: str = "", max_width: int = 1100):
+        """Show an image in Results."""
+        import os
+        if not img_path or not os.path.exists(img_path):
+            self.add_log(f"[RESULTS] Image not found: {img_path}", warn=True)
+            return
+        tex_tag = f"img_tex_{int(time.time() * 1000)}"
+        wh = self._safe_load_image(img_path, tex_tag)
+        if not wh:
+            return
+        w, h = wh
+        if label:
+            dpg.add_text(label, parent=self._results_body)
+            dpg.add_spacer(height=6, parent=self._results_body)
+        width = min(max_width, w)
+        dpg.add_image(tex_tag, parent=self._results_body, width=width, height=int(h * (width / w)))
+        dpg.add_spacer(height=8, parent=self._results_body)
+        dpg.add_text(f"File: {img_path}", parent=self._results_body)
 
     def show_results_window(self, df, algorithm, genomic_predict):
         self.ensure_results_window(show=True, title="Results")
