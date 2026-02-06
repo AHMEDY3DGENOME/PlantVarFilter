@@ -166,168 +166,323 @@ def page_reference_manager(app, parent):
     return "page_ref_manager"
 
 def page_pangenome_builder(app, parent):
+    import os
+    import threading
+    import time
+    from pathlib import Path
+    import dearpygui.dearpygui as dpg
 
+    FASTA_EXTS = (".fa", ".fasta", ".fna")
+
+    def _count_fastas(folder: str) -> int:
+        try:
+            return sum(
+                1 for fn in os.listdir(folder)
+                if fn.lower().endswith(FASTA_EXTS) and os.path.isfile(os.path.join(folder, fn))
+            )
+        except Exception:
+            return 0
+
+    def _busy_build(is_busy: bool):
+        if dpg.does_item_exist("pan_build_btn"):
+            dpg.configure_item("pan_build_btn", enabled=not is_busy)
+        if dpg.does_item_exist("pan_build_spinner"):
+            dpg.configure_item("pan_build_spinner", show=is_busy)
+
+    def _busy_use(is_busy: bool):
+        if dpg.does_item_exist("pan_use_ref_btn"):
+            dpg.configure_item("pan_use_ref_btn", enabled=not is_busy)
+        if dpg.does_item_exist("pan_use_ref_spinner"):
+            dpg.configure_item("pan_use_ref_spinner", show=is_busy)
+
+    def _parse_threads(v) -> int:
+        try:
+            n = int(str(v).strip())
+        except Exception:
+            n = 1
+        return max(1, n)
+
+    def _get_vals():
+        asm_dir = (dpg.get_value("input_pan_assemblies_dir") or "").strip()
+        out_dir = (dpg.get_value("input_pan_out_dir") or "").strip()
+        mode = dpg.get_value("pan_mode")
+        preset = dpg.get_value("pan_minigraph_preset")
+
+        bb_label = dpg.get_value("pan_backbone_strategy")
+        if str(bb_label).lower().startswith("largest"):
+            backbone_strategy = "largest"
+        else:
+            backbone_strategy = "first"
+
+        threads_ui = _parse_threads(dpg.get_value("pan_threads_ui"))
+
+        return asm_dir, out_dir, mode, backbone_strategy, preset, threads_ui
+
+    def _validate_inputs(asm_dir: str, out_dir: str) -> bool:
+        ok = True
+        if not asm_dir:
+            app.add_log("[PAN] Assemblies folder is required (must contain >=2 FASTA).", error=True)
+            return False
+
+        if not os.path.isdir(asm_dir):
+            app.add_log(f"[PAN] Not a valid folder: {asm_dir}", error=True)
+            ok = False
+
+        if not out_dir:
+            app.add_log("[PAN] Output folder is required.", error=True)
+            ok = False
+
+        if ok:
+            n = _count_fastas(asm_dir)
+            if n < 2:
+                app.add_log(f"[PAN] Folder must contain at least 2 FASTA files. Found: {n}", error=True)
+                ok = False
+            else:
+                app.add_log(f"[PAN] FASTA detected in folder: {n}")
+
+        return ok
+
+    class _PanWatchdog:
+        def __init__(
+            self,
+            out_dir: Path,
+            ui_log_fn,
+            interval_sec: int = 20,
+            warn_stall_sec: int = 180,
+            hard_stall_sec: int = 600,
+        ):
+            self.out_dir = out_dir
+            self.ui_log_fn = ui_log_fn
+            self.interval_sec = interval_sec
+            self.warn_stall_sec = warn_stall_sec
+            self.hard_stall_sec = hard_stall_sec
+
+            self.stop_event = threading.Event()
+            self.thread = None
+
+            self.log_path = self.out_dir / "pangenome_graph.log"
+            self.gfa_path = self.out_dir / "pangenome.gfa"
+            self.vgz_path = self.out_dir / "pangenome.vg.gz"
+
+            self._last_change_ts = None
+            self._last_log_mtime = None
+            self._last_gfa_size = None
+            self._last_vgz_size = None
+
+        def _get_mtime(self, p: Path):
+            try:
+                return p.stat().st_mtime
+            except Exception:
+                return None
+
+        def _get_size(self, p: Path):
+            try:
+                return p.stat().st_size
+            except Exception:
+                return None
+
+        def start(self):
+            self._last_change_ts = time.time()
+            self._last_log_mtime = self._get_mtime(self.log_path)
+            self._last_gfa_size = self._get_size(self.gfa_path)
+            self._last_vgz_size = self._get_size(self.vgz_path)
+
+            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread.start()
+
+        def stop(self):
+            self.stop_event.set()
+            if self.thread and self.thread.is_alive():
+                self.thread.join(timeout=1.0)
+
+        def _run(self):
+            self.ui_log_fn(
+                f"[PAN][HB] Watchdog started. Monitoring:\n"
+                f"           log: {self.log_path}\n"
+                f"           gfa: {self.gfa_path}\n"
+                f"           vg : {self.vgz_path}"
+            )
+
+            while not self.stop_event.is_set():
+                time.sleep(self.interval_sec)
+
+                now = time.time()
+                log_mtime = self._get_mtime(self.log_path)
+                gfa_size = self._get_size(self.gfa_path)
+                vgz_size = self._get_size(self.vgz_path)
+
+                changed = False
+
+                if log_mtime is not None and (self._last_log_mtime is None or log_mtime > self._last_log_mtime + 1e-6):
+                    changed = True
+                if gfa_size is not None and (self._last_gfa_size is None or gfa_size > self._last_gfa_size):
+                    changed = True
+                if vgz_size is not None and (self._last_vgz_size is None or vgz_size > self._last_vgz_size):
+                    changed = True
+
+                if changed:
+                    self._last_change_ts = now
+                    self._last_log_mtime = log_mtime
+                    self._last_gfa_size = gfa_size
+                    self._last_vgz_size = vgz_size
+                    self.ui_log_fn(f"[PAN][HB] Running... log_mtime={log_mtime} gfa={gfa_size} vg.gz={vgz_size}")
+                else:
+                    idle = now - (self._last_change_ts or now)
+                    if idle >= self.hard_stall_sec:
+                        self.ui_log_fn(
+                            f"[PAN][STALL] No updates for {int(idle)}s. Might be stuck/slow. Check pangenome_graph.log tail.",
+                            warn=True
+                        )
+                    elif idle >= self.warn_stall_sec:
+                        self.ui_log_fn(
+                            f"[PAN][WARN] No visible updates for {int(idle)}s yet...",
+                            warn=True
+                        )
 
     with dpg.group(parent=parent, show=False, tag="page_pangenome"):
-        dpg.add_text("\nPangenome Builder", indent=10)
+        dpg.add_text("\nPangenome Builder (minigraph)", indent=10)
+        dpg.add_spacer(height=6)
+        dpg.add_text("This step builds a graph pangenome using minigraph and exports GFA + VG.GZ.", indent=10)
         dpg.add_spacer(height=10)
 
-        _file_input_row(
-            "Base Reference FASTA:",
-            "pan_base_ref",
-            parent,
-            (".fa", ".fasta", ".fna"),
-            app=app,
-        )
-
-        _file_input_row(
-            "Assemblies / Consensus FASTA (file):",
-            "pan_assembly_fasta",
-            parent,
-            (".fa", ".fasta", ".fna"),
-            app=app,
-        )
-
-        _dir_input_row(
-            "Assemblies / Consensus Folder (many FASTA):",
-            "pan_assemblies_dir",
-            parent,
-            app=app,
-        )
-
-        _dir_input_row(
-            "Output Folder:",
-            "pan_out_dir",
-            parent,
-            app=app,
-        )
+        _dir_input_row("Assemblies Folder (many FASTA):", "pan_assemblies_dir", parent, app=app)
+        _dir_input_row("Output Folder:", "pan_out_dir", parent, app=app)
 
         dpg.add_spacer(height=10)
+
         with dpg.group(parent=parent, horizontal=True, horizontal_spacing=12):
-            mode_lbl = dpg.add_text("Mode:")
-            mode_combo = dpg.add_combo(
+            dpg.add_text("Engine:")
+            dpg.add_text("minigraph (GFA) + vg convert (VG) + gzip (VG.GZ)")
+
+            dpg.add_text("Preset:")
+            dpg.add_combo(
+                items=["ggs"],
+                default_value="ggs",
+                tag="pan_minigraph_preset",
+                width=120,
+            )
+
+        dpg.add_spacer(height=8)
+
+        default_threads = str(max(1, int(os.environ.get("PLANTVARFILTER_THREADS", "2"))))
+        thread_items = ["1", "2", "4", "8", "16", "24", "32"]
+        if default_threads not in thread_items:
+            thread_items = [default_threads] + thread_items
+
+        with dpg.group(parent=parent, horizontal=True, horizontal_spacing=12):
+            dpg.add_text("Mode:")
+            dpg.add_combo(
                 items=["Fast (subset 25)", "Full (all FASTA in folder)"],
                 default_value="Fast (subset 25)",
                 tag="pan_mode",
                 width=220,
             )
 
-            min_lbl = dpg.add_text("Min contig length:")
-            min_inp = dpg.add_input_int(
-                default_value=1000,
-                min_value=0,
-                step=100,
-                tag="pan_min_contig_len",
-                width=120,
+            dpg.add_text("Backbone:")
+            dpg.add_combo(
+                items=["Largest (recommended)", "First input"],
+                default_value="Largest (recommended)",
+                tag="pan_backbone_strategy",
+                width=180,
             )
 
-        with dpg.tooltip(mode_lbl):
-            dpg.add_text("Fast: builds from a subset for quick testing. Full: uses all assemblies in the folder.")
-        with dpg.tooltip(mode_combo):
-            dpg.add_text("Choose between a quick subset build or a full build over all assemblies.")
-        with dpg.tooltip(min_lbl):
-            dpg.add_text("Contigs shorter than this length will be ignored to reduce noise and speed up building.")
-        with dpg.tooltip(min_inp):
-            dpg.add_text("Minimum contig length threshold (bp).")
+            dpg.add_text("Threads:")
+            dpg.add_combo(
+                items=thread_items,
+                default_value=default_threads,
+                tag="pan_threads_ui",
+                width=90,
+            )
 
         dpg.add_spacer(height=10)
 
-        def _get_vals():
-            base_ref = (dpg.get_value("input_pan_base_ref") or "").strip()
-            asm_file = (dpg.get_value("input_pan_assembly_fasta") or "").strip()
-            asm_dir = (dpg.get_value("input_pan_assemblies_dir") or "").strip()
-            out_dir = (dpg.get_value("input_pan_out_dir") or "").strip()
-            mode = dpg.get_value("pan_mode")
-            min_len = dpg.get_value("pan_min_contig_len")
-            return base_ref, asm_file, asm_dir, out_dir, mode, min_len
-
-        def _validate_inputs(base_ref, asm_file, asm_dir, out_dir):
-            ok = True
-            if not base_ref:
-                app.add_log("[PAN] Base Reference FASTA is required.", error=True)
-                ok = False
-            if not asm_file and not asm_dir:
-                app.add_log("[PAN] Provide either a FASTA file OR a folder of FASTA files.", error=True)
-                ok = False
-            if asm_file and asm_dir:
-                app.add_log("[PAN] Choose only one assemblies input: file OR folder.", error=True)
-                ok = False
-            if not out_dir:
-                app.add_log("[PAN] Output folder is required.", error=True)
-                ok = False
-            return ok
-
-        def _busy_build(is_busy: bool):
-            if dpg.does_item_exist("pan_build_btn"):
-                dpg.configure_item("pan_build_btn", enabled=not is_busy)
-            if dpg.does_item_exist("pan_build_spinner"):
-                dpg.configure_item("pan_build_spinner", show=is_busy)
-
-        def _busy_use(is_busy: bool):
-            if dpg.does_item_exist("pan_use_ref_btn"):
-                dpg.configure_item("pan_use_ref_btn", enabled=not is_busy)
-            if dpg.does_item_exist("pan_use_ref_spinner"):
-                dpg.configure_item("pan_use_ref_spinner", show=is_busy)
-
         def on_build_pangenome(sender=None, app_data=None, user_data=None):
-            base_ref, asm_file, asm_dir, out_dir, mode, min_len = _get_vals()
+            asm_dir, out_dir, mode, backbone_strategy, preset, threads_ui = _get_vals()
 
             app.ensure_log_window(show=True)
-            if not _validate_inputs(base_ref, asm_file, asm_dir, out_dir):
+            if not _validate_inputs(asm_dir, out_dir):
                 return
 
+            app.add_log("[PAN] ===========================================")
+            app.add_log("[PAN] Build requested.")
+            app.add_log(f"[PAN] Assemblies folder: {asm_dir}")
+            app.add_log(f"[PAN] Output folder:     {out_dir}")
+            app.add_log(f"[PAN] Mode:             {mode}")
+            app.add_log(f"[PAN] Preset:            {preset}")
+            app.add_log(f"[PAN] Backbone:          {backbone_strategy}")
+            app.add_log(f"[PAN] Threads (UI):      {threads_ui}")
+            app.add_log("[PAN] ===========================================")
+
             _busy_build(True)
-            app.add_log("[PAN] Build started.")
+            app.add_log("[PAN] Build started (minigraph).")
 
             def task():
-                def logger(msg):
-                    app.ui_emit(app.add_log, msg)
+                def logger(msg, warn=False, error=False):
+                    app.ui_emit(app.add_log, msg, warn=warn, error=error)
 
-                assemblies_input = asm_file if asm_file else asm_dir
-                threads = int(os.environ.get("PLANTVARFILTER_THREADS", "8"))
-                batch_size = 20 if str(mode).lower().startswith("full") else None
+                out_path = Path(out_dir).expanduser().resolve()
+                out_path.mkdir(parents=True, exist_ok=True)
 
-                res = build_pangenome_graph(
-                    base_reference_fasta=base_ref,
-                    assemblies_input=assemblies_input,
-                    output_dir=out_dir,
-                    mode=str(mode),
-                    subset_n=25,
-                    threads=threads,
-                    min_contig_len=int(min_len) if min_len is not None else 0,
-                    minigraph_preset="ggs",
-                    batch_size=batch_size,
-                    logger=logger,
-                )
-                return res
+                wd = _PanWatchdog(out_dir=out_path, ui_log_fn=logger)
+                wd.start()
+                try:
+                    res = build_pangenome_graph(
+                        assemblies_input=asm_dir,
+                        output_dir=str(out_path),
+                        mode=str(mode),
+                        subset_n=25,
+                        threads=threads_ui,
+                        minigraph_preset=str(preset or "ggs"),
+                        backbone_strategy=backbone_strategy,
+                        logger=logger,
+                        vg_gzip_only=True,
+                    )
+                    return res
+                finally:
+                    wd.stop()
 
             def on_done(res):
-                app._pan_last_gfa = res.pangenome_gfa
-                app.add_log(f"[PAN] Output GFA: {res.pangenome_gfa}")
-                app.add_log(f"[PAN] Report: {res.report_txt}")
-                app.add_log(f"[PAN] Log: {res.log_txt}")
-                app.add_log("[PAN] Build finished ✔")
-                _busy_build(False)
+                try:
+                    app._pan_last_gfa = res.pangenome_gfa
+                    app._pan_last_vg = getattr(res, "pangenome_vg", None)
+
+                    app.add_log("[PAN] Build finished ✔")
+                    app.add_log(f"[PAN] Output GFA: {res.pangenome_gfa}")
+                    if getattr(res, "pangenome_vg", None):
+                        app.add_log(f"[PAN] Output VG.GZ: {res.pangenome_vg}")
+                    app.add_log(f"[PAN] Report: {res.report_txt}")
+                    app.add_log(f"[PAN] Log:    {res.log_txt}")
+                except Exception as e:
+                    app.add_log(f"[PAN][UI] on_done failed: {e}", error=True)
+                finally:
+                    _busy_build(False)
 
             def on_error(exc):
                 app.add_log(f"[PAN] Build failed: {exc}", error=True)
+                app.add_log("[PAN] Tip: open pangenome_graph.log tail (OOM / killed-by-signal).", warn=True)
                 _busy_build(False)
 
             app.run_task("pangenome_build", task, on_done=on_done, on_error=on_error)
 
         def on_use_as_reference(sender=None, app_data=None, user_data=None):
+            vg = (getattr(app, "_pan_last_vg", "") or "").strip()
             gfa = (getattr(app, "_pan_last_gfa", "") or "").strip()
-            if not gfa:
+
+            if not vg and not gfa:
                 app.ensure_log_window(show=True)
-                app.add_log("[PAN] No pangenome GFA found. Build first.", error=True)
+                app.add_log("[PAN] No pangenome output found. Build first.", error=True)
                 return
 
             _busy_use(True)
             try:
                 app.ensure_log_window(show=True)
                 if hasattr(app, "use_reference") and callable(getattr(app, "use_reference")):
-                    app.use_reference(reference_path=gfa, reference_type="gfa")
-                    app.add_log(f"[PAN] Reference set: {gfa}")
+                    if vg:
+                        app.use_reference(reference_path=vg, reference_type="vg.gz")
+                        app.add_log(f"[PAN] Reference set (VG.GZ): {vg}")
+                    else:
+                        app.use_reference(reference_path=gfa, reference_type="gfa")
+                        app.add_log(f"[PAN] Reference set (GFA): {gfa}")
                 else:
                     app.add_log("[PAN] Backend not wired yet: implement GWASApp.use_reference(reference_path, reference_type).", warn=True)
             except Exception as exc:
@@ -336,36 +491,20 @@ def page_pangenome_builder(app, parent):
                 _busy_use(False)
 
         with dpg.group(parent=parent, horizontal=True, horizontal_spacing=10):
-            build_btn = dpg.add_button(
-                label="Build Pangenome",
+            dpg.add_button(
+                label="Build Pangenome (minigraph)",
                 callback=on_build_pangenome,
-                width=180,
+                width=220,
                 tag="pan_build_btn",
             )
-            with dpg.tooltip(build_btn):
-                dpg.add_text("Build the pangenome graph (GFA) into the selected output folder.")
-
-            use_btn = dpg.add_button(
-                label="Use as Reference",
+            dpg.add_button(
+                label="Use as Reference (VG.GZ preferred)",
                 callback=on_use_as_reference,
-                width=180,
+                width=300,
                 tag="pan_use_ref_btn",
             )
-            with dpg.tooltip(use_btn):
-                dpg.add_text("Set the generated pangenome GFA as the active reference for downstream steps.")
-
-            dpg.add_loading_indicator(
-                tag="pan_build_spinner",
-                radius=6,
-                style=2,
-                show=False,
-            )
-            dpg.add_loading_indicator(
-                tag="pan_use_ref_spinner",
-                radius=6,
-                style=2,
-                show=False,
-            )
+            dpg.add_loading_indicator(tag="pan_build_spinner", radius=6, style=2, show=False)
+            dpg.add_loading_indicator(tag="pan_use_ref_spinner", radius=6, style=2, show=False)
 
 
 def _render_ref_status(app, st: ReferenceIndexStatus):
@@ -437,6 +576,262 @@ def _on_build_reference(app):
     finally:
         dpg.configure_item("ref_build_spinner", show=False)
         dpg.configure_item("btn_ref_build", enabled=True)
+
+def _on_pangwas_category_change(sender, app_data):
+    mapping = {
+        "Baseline tests": [
+            "Welch t-test",
+            "Wilcoxon rank-sum",
+            "Fisher exact test",
+        ],
+        "Regression models (GLM)": [
+            "Linear regression",
+            "Logistic regression",
+        ],
+        "Mixed models (LMM)": [
+            "FaST-LMM",
+            "GEMMA",
+            "EMMAX",
+        ],
+        "Gene-based / Burden": [
+            "Gene burden test",
+            "Presence ratio test",
+        ],
+        "Machine learning (exploratory)": [
+            "LASSO",
+            "Elastic Net",
+            "Random Forest importance",
+        ],
+    }
+
+    methods = mapping.get(app_data, [])
+    dpg.configure_item("pangwas_method", items=methods)
+    if methods:
+        dpg.set_value("pangwas_method", methods[0])
+
+
+def page_pangwas(app, parent):
+    from plantvarfilter.pangenome_module.pangwas_pipeline import PANGWAS_ALGORITHMS
+
+    algo_labels = []
+    algo_map = {}
+
+    for category, methods in PANGWAS_ALGORITHMS.items():
+        for method, meta in methods.items():
+            label = meta.get("label", f"{category}:{method}")
+            algo_labels.append(label)
+            algo_map[label] = (category, method)
+
+    app._pangwas_algo_map = algo_map
+
+    with dpg.group(parent=parent, show=False, tag="page_pangwas"):
+        dpg.add_text("\npanGWAS (Pangenome-based Association)", indent=10)
+        dpg.add_spacer(height=10)
+
+        with dpg.group(horizontal=True, horizontal_spacing=60):
+
+            # ================= Inputs =================
+            with dpg.group():
+                dpg.add_text("Inputs", color=(200, 220, 200))
+                dpg.add_spacer(height=6)
+
+                vcf_btn = dpg.add_button(
+                    label="Choose merged multi-sample VCF (.vcf/.vcf.gz)",
+                    callback=lambda: dpg.show_item("file_dialog_vcf"),
+                    width=300,
+                    tag="pangwas_btn_vcf",
+                )
+                app._secondary_buttons.append(vcf_btn)
+
+                dpg.add_text("", tag="pangwas_vcf_path_lbl", wrap=520)
+                dpg.add_input_text(tag="pangwas_vcf_path", show=False)
+
+                pheno_btn = dpg.add_button(
+                    label="Choose phenotype file",
+                    callback=lambda: dpg.show_item("file_dialog_pheno"),
+                    width=300,
+                    tag="pangwas_btn_pheno",
+                )
+                app._secondary_buttons.append(pheno_btn)
+
+                dpg.add_text("", tag="pangwas_pheno_path_lbl", wrap=520)
+                dpg.add_input_text(tag="pangwas_pheno_path", show=False)
+
+                _dir_input_row(
+                    "Output folder (optional):",
+                    "pangwas_out_dir",
+                    parent,
+                    app=app,
+                )
+
+            # ================= Options =================
+            with dpg.group():
+                dpg.add_text("Options", color=(200, 220, 200))
+                dpg.add_spacer(height=6)
+
+                dpg.add_combo(
+                    algo_labels,
+                    default_value=algo_labels[0],
+                    label="Algorithm",
+                    width=360,
+                    tag="pangwas_algo_combo",
+                )
+
+                dpg.add_input_text(
+                    label="Trait column name",
+                    width=320,
+                    default_value="PHENO",
+                    tag="pangwas_trait_name",
+                )
+
+                dpg.add_input_int(
+                    label="Max variants (0 = all)",
+                    width=220,
+                    default_value=0,
+                    min_value=0,
+                    min_clamped=True,
+                    tag="pangwas_max_variants",
+                )
+
+                run_btn = dpg.add_button(
+                    label="Run panGWAS",
+                    tag="pangwas_run_btn",
+                    callback=_on_run_pangwas,
+                    user_data={"app": app},
+                    width=220,
+                    height=38,
+                )
+                app._primary_buttons.append(run_btn)
+
+                dpg.add_loading_indicator(
+                    tag="pangwas_run_spinner",
+                    radius=6,
+                    show=False,
+                )
+
+    return "page_pangwas"
+
+
+def _on_run_pangwas(sender, app_data, user_data):
+    app = user_data.get("app")
+    if app is None:
+        return
+
+    from pathlib import Path
+    import traceback
+    import time
+
+    dpg.configure_item("pangwas_run_spinner", show=True)
+    dpg.configure_item("pangwas_run_btn", enabled=False)
+
+    try:
+        vcf_path = app._get_appdata_path_safe(app.vcf_app_data)
+        pheno_path = app._get_appdata_path_safe(app.pheno_app_data)
+        trait = (dpg.get_value("pangwas_trait_name") or "").strip()
+        max_vars = int(dpg.get_value("pangwas_max_variants") or 0)
+
+        algo_label = dpg.get_value("pangwas_algo_combo")
+        if algo_label not in app._pangwas_algo_map:
+            raise ValueError(f"Unknown algorithm label: {algo_label}")
+
+        category, method = app._pangwas_algo_map[algo_label]
+
+        out_dir = dpg.get_value("input_pangwas_out_dir") or str(Path(pheno_path).parent)
+
+        # basic validation
+        if not vcf_path or not Path(vcf_path).exists():
+            raise FileNotFoundError(f"VCF not found: {vcf_path}")
+        if not pheno_path or not Path(pheno_path).exists():
+            raise FileNotFoundError(f"Phenotype not found: {pheno_path}")
+        if not trait:
+            raise ValueError("Trait column name is required")
+
+        app.ensure_log_window(show=True)
+        app.add_log("[panGWAS] Starting analysis")
+        app.add_log(f"[panGWAS] VCF: {vcf_path}")
+        app.add_log(f"[panGWAS] Pheno: {pheno_path}")
+        app.add_log(f"[panGWAS] Trait: {trait}")
+        app.add_log(f"[panGWAS] Algo: {category}/{method}")
+        app.add_log(f"[panGWAS] Max variants: {max_vars}")
+
+        task_key = f"pangwas_run_{int(time.time())}"
+
+        def task():
+            from plantvarfilter.pangenome_module.vcf_pav_builder import VariantPAVBuilder
+            from plantvarfilter.pangenome_module.pangwas_pipeline import (
+                load_phenotype,
+                run_pangwas,
+            )
+
+            print("[panGWAS][DEBUG] task() ENTERED")
+
+            print("[panGWAS] Building PAV matrix…")
+            pav = VariantPAVBuilder(
+                vcf_path=vcf_path,
+                max_variants=max_vars,
+            ).build_matrix()
+
+            print("[panGWAS] Loading phenotype…")
+            y = load_phenotype(pheno_path, trait)
+
+            print("[panGWAS] Running association test…")
+            res = run_pangwas(pav, y, category, method)
+
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            out_csv = Path(out_dir) / f"pangwas_{trait}_{category}_{method}.csv"
+            res.to_csv(out_csv, index=False)
+
+            print(f"[panGWAS] Results written: {out_csv}")
+            return str(out_csv)
+
+        def on_done(out_csv):
+            def ui():
+                try:
+                    from plantvarfilter.pangenome_module.pangwas_plots import plot_pangwas_manhattan
+
+                    app.add_log(f"[panGWAS] Done ✔ Results saved: {out_csv}")
+
+                    app.results_clear(title="panGWAS Results", show=True)
+                    app.results_add_csv(out_csv, title="panGWAS Results", max_rows=500)
+
+                    plot_png = out_csv.replace(".csv", ".png")
+                    plot_pangwas_manhattan(out_csv, plot_png)
+
+                    if Path(plot_png).exists():
+                        app.results_add_image(plot_png, label="Manhattan Plot")
+                    else:
+                        app.add_log(f"[panGWAS] Plot not generated: {plot_png}", warn=True)
+
+                except Exception as e:
+                    app.add_log(f"[panGWAS] on_done UI error: {e}", error=True)
+                    app.add_log(traceback.format_exc(), error=True)
+                finally:
+                    dpg.configure_item("pangwas_run_spinner", show=False)
+                    dpg.configure_item("pangwas_run_btn", enabled=True)
+
+            app.ui_emit(ui)
+
+        def on_error(e):
+            def ui():
+                try:
+                    app.add_log("[panGWAS] Failed", error=True)
+                    app.add_log(str(e), error=True)
+                    app.add_log(traceback.format_exc(), error=True)
+                finally:
+                    dpg.configure_item("pangwas_run_spinner", show=False)
+                    dpg.configure_item("pangwas_run_btn", enabled=True)
+
+            app.ui_emit(ui)
+
+        app.run_task(task_key, task, on_done, on_error)
+
+    except Exception as e:
+        app.add_log(str(e), error=True)
+        app.add_log(traceback.format_exc(), error=True)
+        dpg.configure_item("pangwas_run_spinner", show=False)
+        dpg.configure_item("pangwas_run_btn", enabled=True)
+
+
 
 def page_fastq_qc(app, parent):
     with dpg.group(parent=parent, show=False, tag="page_fastq_qc"):
@@ -2651,6 +3046,7 @@ def build_pages(app, parent):
 
     _mount("ref_manager", page_reference_manager)
     _mount("pangenome", page_pangenome_builder)
+    _mount("pangwas", page_pangwas)
     _mount("fastq_qc", page_fastq_qc)
     _mount("alignment", page_alignment)
     _mount("pre_sam", page_preprocess_samtools)
