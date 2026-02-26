@@ -276,10 +276,9 @@ def header_palette():
     }
 
 # ===================== Runtime accent themes =========================
-# ملاحظة: هنستخدم tag فريد في كل مرة لتجنب "Alias already exists"
 _RUNTIME_COUNTERS = {"primary": 0, "sidebar": 0}
 _PRIMARY_THEME_CURRENT = "theme_button_primary"   # fallback to static baseline
-_SIDEBAR_ACTIVE_THEME_CURRENT = None             # اختياري (مش مستخدم حالياً)
+_SIDEBAR_ACTIVE_THEME_CURRENT = None
 
 def get_primary_button_theme_tag() -> str:
     """Used by main_ui to bind active buttons (nav/current)."""
@@ -303,7 +302,6 @@ def _safe_delete(tag: str):
         if tag and dpg.does_item_exist(tag):
             dpg.delete_item(tag)
     except Exception:
-        # لو حصل خطأ أثناء الحذف، نتجاهله ونطلع tag جديد لاحقاً
         pass
 
 def set_accent_color(base_rgb, hover_rgb=None, active_rgb=None):
@@ -317,11 +315,9 @@ def set_accent_color(base_rgb, hover_rgb=None, active_rgb=None):
     hov  = tuple(hover_rgb)  if hover_rgb  else _lighten(base, 0.25)
     act  = tuple(active_rgb) if active_rgb else _darken(base, 0.35)
 
-    # حاول احذف الـ tag القديم (لو كان runtime)
     old_tag = _PRIMARY_THEME_CURRENT if _PRIMARY_THEME_CURRENT and _PRIMARY_THEME_CURRENT.startswith("__rt_") else None
     _safe_delete(old_tag)
 
-    # ابنِ theme جديد بوسم فريد
     new_tag = _unique_tag("primary")
     with dpg.theme(tag=new_tag):
         with dpg.theme_component(dpg.mvButton):

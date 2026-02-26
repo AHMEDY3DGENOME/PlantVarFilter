@@ -3,8 +3,8 @@ requires = ["setuptools>=70.0", "wheel", "build"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "plantvarfilter"
-version = "0.2.12"
+name = "PlantOmicsGwas"
+version = "0.2.13"
 description = "Integrated GWAS and genomic prediction pipeline with a GUI for plant genomics."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
@@ -30,9 +30,9 @@ gwas = ["fastlmm; python_version < '3.12'", "pysnptools", "geneview"]
 all = ["xgboost>=2.0", "fastlmm; python_version < '3.12'", "pysnptools", "geneview"]
 
 [project.scripts]
-plantvarfilter = "plantvarfilter.main_ui:main"
-pvf-gwas = "plantvarfilter.gwas_pipeline:cli"
-pvf-batch-gwas = "plantvarfilter.batch_gwas:cli"
+plantomicsgwas = "plantvarfilter.main_ui:main"
+pangwas-gwas = "plantvarfilter.gwas_pipeline:cli"
+pangwas-batch-gwas = "plantvarfilter.batch_gwas:cli"
 
 [project.urls]
 Homepage = "https://github.com/AHMEDY3DGENOME/PlantVarFilter"

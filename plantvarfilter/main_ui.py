@@ -662,21 +662,42 @@ class GWASApp:
             pass
 
     def _build_header(self, parent, big: bool = False):
-        with dpg.group(parent=parent, horizontal=True, horizontal_spacing=8):
-            logo_path = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
-            if self._safe_load_image(logo_path, "plant_logo_tex"):
-                dpg.add_image("plant_logo_tex", width=40 if not big else 52, height=40 if not big else 52)
+
+        logo_path = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
+
+        size = 52 if big else 40
+        text_color = (210, 230, 210) if self.night_mode else (30, 45, 35)
+        sub_color = (220, 200, 120) if self.night_mode else (40, 90, 40)
+
+        with dpg.group(parent=parent, horizontal=True, horizontal_spacing=10):
+
+            # ---- Logo ----
+            if not dpg.does_item_exist("plant_logo_tex"):
+                self._safe_load_image(logo_path, "plant_logo_tex")
+
+            if dpg.does_item_exist("plant_logo_tex"):
+                dpg.add_image(
+                    "plant_logo_tex",
+                    width=size,
+                    height=size
+                )
             else:
-                dl = dpg.add_drawlist(width=40 if not big else 52, height=40 if not big else 52)
-                dpg.draw_circle(center=(20 if not big else 26, 20 if not big else 26),
-                                radius=18 if not big else 24,
-                                color=(76, 175, 110, 255), thickness=2, parent=dl)
+                dl = dpg.add_drawlist(width=size, height=size)
+                dpg.draw_circle(
+                    center=(size // 2, size // 2),
+                    radius=size // 2 - 4,
+                    color=(76, 175, 110, 255),
+                    thickness=2,
+                    parent=dl
+                )
 
-            dpg.add_text("plantvarfilter", color=(210, 230, 210) if self.night_mode else (30, 45, 35))
+            # ---- Title ----
+            dpg.add_text("PlantOmicsGwas", color=text_color)
+
+            # ---- Optional subtitle when big ----
             if big:
-                dpg.add_spacer(width=10)
-                dpg.add_text("", color=(220, 200, 120) if self.night_mode else (40, 90, 40))
-
+                dpg.add_spacer(width=6)
+                dpg.add_text("Variant Filtering Engine", color=sub_color)
     def run_ld_analysis(self, s, data):
         bed_path = self._get_appdata_path_safe(self.bed_app_data)
         vcf_path = self._get_appdata_path_safe(self.vcf_app_data)
