@@ -30,9 +30,8 @@ gwas = ["fastlmm; python_version < '3.12'", "pysnptools", "geneview"]
 all = ["xgboost>=2.0", "fastlmm; python_version < '3.12'", "pysnptools", "geneview"]
 
 [project.scripts]
-plantomicsgwas = "plantvarfilter.main_ui:main"
-pangwas-gwas = "plantvarfilter.gwas_pipeline:cli"
-pangwas-batch-gwas = "plantvarfilter.batch_gwas:cli"
+plantomicsgwas = "plantvarfilter.cli:main"
+plantomicsgwas-gui = "plantvarfilter.main_ui:main"
 
 [project.urls]
 Homepage = "https://github.com/AHMEDY3DGENOME/PlantVarFilter"

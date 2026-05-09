@@ -14,6 +14,14 @@
 - Ahmed Yassin, Computational Biologist
 - Falak Sher Khan, Computational Biologist ( Peking University Institute of Advanced Agricultural Science, PKU-IAAS)
 
+### **Dual-Mode Execution Framework**
+
+| Feature | **Local Desktop (GUI Mode)** | **Remote Server (CLI Mode)** |
+| :--- | :--- | :--- |
+| **Interface** | Interactive Graphical User Interface (DearPyGui) | High-Performance Headless CLI (Argparse) |
+| **Command** | `plantomicsgwas-gui` | `plantomicsgwas [subcommand]` |
+| **Best For** | Visual exploration, real-time plotting, and interactive analysis. | Large-scale automation, HPC clusters, and SSH sessions. |
+| **Environment** | Local workstations with display support. | Remote servers, Slurm jobs, and headless Linux environments. |
 
 ## Acknowledgment
 
