@@ -1,4 +1,4 @@
-# PlantVarFilter: An Integrated GWAS and Genomic Prediction Pipeline for Plant Genomes
+# PlantOmicsGwas: An Integrated GWAS and Genomic Prediction Pipeline for Plant Genomes
 
 ## Developers & Contributors
 
@@ -11,7 +11,7 @@
 ------------------------------------------------------------------------------------------------------------------------
 ## Developed By: 
 
-- Ahmed Yassin, Computational Biologist
+- Ahmed Yassin, Computational Biologist || PhD Candidate
 - Falak Sher Khan, Computational Biologist ( Peking University Institute of Advanced Agricultural Science, PKU-IAAS)
 
 ### **Dual-Mode Execution Framework**
