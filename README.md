@@ -32,6 +32,19 @@
 ## Abstract
 PlantVarFilter represents the second-generation release of a previously lightweight Python toolkit, now evolved into a fully modular and GUI-based genomic analysis pipeline designed for large-scale plant genomics. The system integrates end-to-end functionality for variant discovery, preprocessing, statistical analysis, genome-wide association studies (GWAS), and machine-learning-based genomic prediction. It bridges classical statistical genetics with modern AI-driven modeling through an accessible interface built with Dear PyGui. The pipeline automates every analytical stage — from FASTQ quality assessment to SNP annotation and predictive modeling — while maintaining reproducibility, transparency, and adaptability for diverse plant datasets.
 
+
+## Release Status
+
+**PlantOmicsGwas v0.1.0** represents the first publicly available release of the software and is provided as an early-access version for evaluation, testing, and community feedback.
+
+Although the core analytical modules have been implemented and validated, the software remains under active development. Ongoing work focuses on improving computational performance, optimizing memory usage, enhancing large-scale genomic data processing, refining the graphical user interface, expanding machine-learning capabilities, and improving overall usability and workflow integration.
+
+Future releases will introduce additional analytical modules, broader compatibility with emerging genomic technologies, further optimization for high-performance computing environments, and continuous improvements based on user feedback and real-world applications.
+
+Users are encouraged to report issues, suggest new features, and contribute to the continuous development of the project.
+
+
+
 ## 1. Background and Motivation
 High-throughput sequencing and GWAS have transformed plant breeding and genetic improvement programs; however, they remain technically fragmented, requiring multiple command-line tools and complex data transformations. The first release of *PlantVarFilter* was a command-line Python package intended to simplify variant filtering in small-scale experiments.  
 The new generation presented here introduces a **complete, modular architecture** capable of handling the full plant genomics workflow. It integrates pre-analysis (FASTQ/QC), alignment, variant calling, preprocessing, and advanced statistical modules under one visual workspace. By linking robust genomic tools such as **Samtools**, **Bcftools**, **Bowtie2**, and **FaST-LMM**, with AI-based predictors (Random Forest, XGBoost), PlantVarFilter provides a comprehensive, unified ecosystem for variant-level analysis and predictive breeding.
@@ -45,6 +58,15 @@ The new version of PlantVarFilter is organized into interconnected functional su
 - **GWAS and Genomic Prediction Modules**: Execute both traditional mixed-model GWAS via FaST-LMM and machine learning pipelines using Random Forest and XGBoost regressors.
 - **Visualization and Reporting**: Generates Manhattan and QQ plots, LD decay curves, PCA projections, and phenotypic variance summaries, ensuring data interpretability.
 - **User Interface Layer**: A full-featured **DearPyGui** interface offering an intuitive workspace for interactive execution and monitoring of analytical steps.
+
+## Overall PlantOmicsGwas Workflow
+The figure below summarizes the complete PlantOmicsGwas workflow, illustrating the end-to-end analytical pipeline from raw sequencing data through quality control, alignment, variant calling, GWAS, genomic prediction, visualization, and final reporting. The diagram also highlights the dual execution framework (GUI and CLI), emphasizing the modular architecture and reproducible workflow of the software.
+
+<p align="center">
+  <img src="plantvarfilter/assets/overall_workflow.png"
+       alt="PlantOmicsGwas Workflow"
+       width="100%">
+</p>
 
 ## 3. Methodology
 
@@ -196,11 +218,19 @@ For issues, collaborations, or dataset integration inquiries, contact the author
 
 
 ## 12. Future Directions
-Planned updates include:
-- Expansion toward pan-genomic variant aggregation.  
-- Support for transcriptome-derived SNP integration.  
-- Enhanced visualization engine using WebGPU for real-time rendering.  
-- Cloud-ready version for distributed plant GWAS datasets.
+
+PlantOmicsGwas is under active and continuous development. The current release (**v0.1.0**) establishes the initial public foundation of the platform, while future versions will focus on expanding analytical capabilities, improving computational performance, and enhancing the overall user experience. Planned developments include:
+
+- Continuous optimization of computational performance, memory efficiency, and large-scale genomic data processing.
+- Expansion toward graph-based pangenome analysis and pan-genomic variant aggregation.
+- Integration of transcriptome-derived SNPs and multi-omics data for comprehensive genomic analysis.
+- Advanced AI-driven genomic prediction models and automated model selection.
+- Enhanced visualization using next-generation rendering technologies for interactive, publication-quality figures.
+- Native support for distributed computing, cloud deployment, and HPC environments.
+- Improved workflow automation, reproducibility, and project management.
+- Additional statistical genetics modules, quality-control algorithms, and downstream genomic analyses.
+- Continuous refinement of the graphical user interface (GUI) and user experience based on community feedback.
+- Regular feature updates, performance improvements, bug fixes, and expanded documentation.
 
 ## 13. Graphical User Interface
 The figure below demonstrates the unified Dear PyGui interface of PlantVarFilter,
