@@ -62,11 +62,11 @@ The new version of PlantVarFilter is organized into interconnected functional su
 ## Overall PlantOmicsGwas Workflow
 The figure below summarizes the complete PlantOmicsGwas workflow, illustrating the end-to-end analytical pipeline from raw sequencing data through quality control, alignment, variant calling, GWAS, genomic prediction, visualization, and final reporting. The diagram also highlights the dual execution framework (GUI and CLI), emphasizing the modular architecture and reproducible workflow of the software.
 
-<p align="center">
-  <img src="plantvarfilter/assets/overall_workflow.png"
-       alt="PlantOmicsGwas Workflow"
-       width="100%">
-</p>
+## Overall PlantOmicsGwas Workflow
+
+The figure below summarizes the complete PlantOmicsGwas workflow, illustrating the end-to-end analytical pipeline from raw sequencing data through quality control, alignment, variant calling, GWAS, genomic prediction, visualization, and final reporting. The diagram also highlights the dual execution framework (GUI and CLI), emphasizing the modular architecture and reproducible workflow of the software.
+
+![PlantOmicsGwas Workflow](https://raw.githubusercontent.com/AHMEDY3DGENOME/PlantOmicsGWAS/main/plantvarfilter/assets/overall_workflow.png)
 
 ## 3. Methodology
 
