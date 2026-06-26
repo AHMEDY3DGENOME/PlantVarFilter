@@ -9,11 +9,42 @@ description = "Integrated GWAS and genomic prediction pipeline with a GUI for pl
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = { text = "MIT" }
+
 authors = [
   { name = "Ahmed Yassin, Computational Biologist", email = "ahmedyassin300@outlook.com" },
   { name = "Falak Sher Khan, Post-doctoral scientist", email = "falak.khan@pku.edu.cn" }
 ]
-keywords = ["GWAS", "genomics", "plants", "bioinformatics", "variant-calling", "machine-learning"]
+
+maintainers = [
+  { name = "Ahmed Yassin", email = "ahmedyassin300@outlook.com" }
+]
+
+keywords = [
+  "GWAS",
+  "genomics",
+  "plants",
+  "bioinformatics",
+  "variant-calling",
+  "machine-learning",
+  "genomic-prediction",
+  "pangenome",
+  "plant-breeding"
+]
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: POSIX :: Linux",
+  "License :: OSI Approved :: MIT License",
+  "Natural Language :: English"
+]
 
 dependencies = [
   "numpy>=1.26",
@@ -27,16 +58,22 @@ dependencies = [
 [project.optional-dependencies]
 ml = ["xgboost>=2.0"]
 gwas = ["fastlmm; python_version < '3.12'", "pysnptools", "geneview"]
-all = ["xgboost>=2.0", "fastlmm; python_version < '3.12'", "pysnptools", "geneview"]
+all = [
+  "xgboost>=2.0",
+  "fastlmm; python_version < '3.12'",
+  "pysnptools",
+  "geneview"
+]
 
 [project.scripts]
 plantomicsgwas = "plantvarfilter.cli:main"
 plantomicsgwas-gui = "plantvarfilter.main_ui:main"
 
 [project.urls]
-Homepage = "https://github.com/AHMEDY3DGENOME/PlantVarFilter"
-Documentation = "https://github.com/AHMEDY3DGENOME/PlantVarFilter/wiki"
-"Issue Tracker" = "https://github.com/AHMEDY3DGENOME/PlantVarFilter/issues"
+Homepage = "https://github.com/AHMEDY3DGENOME/PlantOmicsGWAS"
+Documentation = "https://github.com/AHMEDY3DGENOME/PlantOmicsGWAS/wiki"
+Repository = "https://github.com/AHMEDY3DGENOME/PlantOmicsGWAS"
+"Issue Tracker" = "https://github.com/AHMEDY3DGENOME/PlantOmicsGWAS/issues"
 
 [tool.setuptools]
 include-package-data = true
