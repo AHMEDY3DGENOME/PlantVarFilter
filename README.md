@@ -2,17 +2,19 @@
 
 ## Developers & Contributors
 
-| Developer                         | Expertise                     |
-|----------------------------------|-------------------------------|
-| **Ahmed Yassin**                 | Computational Biologist       |
-| **Falak Sher Khan**              | Computational Biologist       |
-| **Plantvarfilter Software (Affiliation)** | Ye-Lab (PKU-IAAS)        |
+| Developer                                 | Expertise                     |
+|-------------------------------------------|-------------------------------|
+| **Ahmed Yassin**                          | Computational Biologist       |
+| **Falak Sher Khan**                       | Computational Biologist       |
+| **PlantOmicsGwas Software (Affiliation)** | Ye-Lab (PKU-IAAS)        |
+ | **PlantOmicsGwas Status** | Early Demonstration Release (Under Active Development) |
 
 ------------------------------------------------------------------------------------------------------------------------
 ## Developed By: 
 
 - Ahmed Yassin, Computational Biologist || PhD Candidate
-- Falak Sher Khan, Computational Biologist ( Peking University Institute of Advanced Agricultural Science, PKU-IAAS)
+- Falak Sher Khan, PhD, computational biologist 
+The Peking university of Advanced Agricultural Science (PKU-IAAS), China
 
 
 > **⚠️ Early Demonstration Release (v0.1.0)**
