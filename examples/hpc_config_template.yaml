@@ -1,0 +1,143 @@
+project:
+  name: plantomicsgwas_hpc_project
+  description: Full HPC workflow for PlantOmicsGWAS
+  version: 1.0
+
+input:
+  reference_fasta: data/reference/genome.fa
+  fastq_dir: data/fastq
+  phenotype_file: data/phenotypes/phenotype.csv
+
+  # Optional existing processed files
+  bam_dir:
+  sorted_bam_dir:
+  raw_vcf:
+  filtered_vcf:
+  gff_file:
+  covariates_file:
+  sample_metadata:
+
+  # Pan-genome
+  pav_input:
+  pav_matrix:
+
+output:
+  dir: results/plantomicsgwas_hpc
+  logs_dir: results/plantomicsgwas_hpc/logs
+  reports_dir: results/plantomicsgwas_hpc/reports
+  plots_dir: results/plantomicsgwas_hpc/plots
+
+compute:
+  threads: 32
+  memory: 128G
+  temp_dir: tmp
+  resume: true
+  overwrite: false
+
+tools:
+  aligner: bowtie2
+  variant_caller: bcftools
+  gwas_method: fastlmm
+  prediction_model: random_forest
+
+steps:
+  reference_indexing: true
+  fastq_qc: true
+  alignment: true
+  bam_processing: true
+  variant_calling: true
+  bcftools_processing: true
+  vcf_quality: true
+  annotation: false
+  gwas: true
+  batch_gwas: false
+  genomic_prediction: false
+  ai_gwas_model: false
+  ld_analysis: false
+  pav_matrix: false
+  vcf_pav: false
+  pangwas: false
+  pangwas_plots: false
+  plots: false
+
+gwas:
+  trait_column:
+  trait_columns: []
+  covariates: []
+  maf: 0.05
+  missing_rate: 0.10
+  significance_threshold: 1e-6
+
+batch_gwas:
+  trait_columns: []
+  parallel_traits: true
+
+genomic_prediction:
+  model: random_forest
+  test_size: 0.2
+  random_state: 42
+  cv_folds: 5
+
+ai_gwas_model:
+  enabled: true
+  model_config:
+  top_snps: 100
+
+ld_analysis:
+  window_size: 100000
+  r2_threshold: 0.2
+
+pangenome:
+  enabled: false
+  presence_threshold: 0.8
+  method: pav_gwas
+
+plots:
+  manhattan: true
+  qq: true
+  pca: true
+  ld: true
+  prediction: true
+  qc: true
+
+hpc:
+  scheduler: slurm
+
+  job_name: plantomicsgwas
+  partition: compute
+  nodes: 1
+  tasks_per_node: 1
+  cpus_per_task: 32
+  memory: 128G
+  time: "48:00:00"
+
+  conda_env: plantomicsgwas-hpc
+
+  account:
+  email:
+  mail_type: END,FAIL
+
+  # -------------------------------
+  # HPC Array Jobs
+  # -------------------------------
+  array: false
+
+  # traits | chromosomes | samples | custom
+  array_mode: traits
+
+  # Number of items processed by each array task
+  chunk_size: 1
+
+  # Used when array_mode = chromosomes
+  chromosomes: []
+
+  # Used when array_mode = samples
+  samples: []
+
+  # Used when array_mode = custom
+  tasks: []
+
+logging:
+  level: INFO
+  save_command_history: true
+  save_runtime_summary: true
