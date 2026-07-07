@@ -17,7 +17,7 @@
 The Peking university of Advanced Agricultural Science (PKU-IAAS), China
 
 
-> **⚠️ Early Demonstration Release (v0.2.4)**
+> **⚠️ Early Demonstration Release (v1.2.7)**
 >
 > **PlantOmicsGwas v0.1.0** is the **first public demonstration release** of the software and is intended exclusively for evaluation, testing, and feedback from researchers, collaborators, and the plant genomics community.
 >
