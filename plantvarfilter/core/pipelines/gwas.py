@@ -2,7 +2,10 @@
 PlantOmicsGWAS Core Pipeline - GWAS
 
 Stable wrapper for the existing GWAS CLI.
-Later, this can be refactored to call plantvarfilter.gwas_pipeline.GWAS directly.
+
+Supports two entry points:
+- PLINK BED prefix: --bed
+- VCF / VCF.GZ: --vcf
 """
 
 from __future__ import annotations
@@ -19,13 +22,7 @@ class GWASStep(PipelineStep):
     name = "GWAS Analysis"
     description = "Run genome-wide association analysis."
 
-    def execute(self, context: PipelineContext) -> None:
-        vcf = (
-            context.get_input("filtered_vcf")
-            or context.get_input("vcf")
-            or str(context.output_dir / "variants" / "filtered_variants.vcf.gz")
-        )
-
+    def _get_phenotype(self, context: PipelineContext) -> str:
         phenotype = (
             context.get_input("phenotype_file")
             or context.get_input("phenotype")
@@ -35,11 +32,48 @@ class GWASStep(PipelineStep):
         if not phenotype:
             raise ValueError("Missing required input: phenotype_file")
 
+        if not Path(phenotype).exists():
+            raise FileNotFoundError(f"Phenotype file not found: {phenotype}")
+
+        return str(phenotype)
+
+    def _build_input_args(self, context: PipelineContext) -> list[str]:
+        plink_prefix = (
+            context.get_input("plink_prefix")
+            or context.get_input("bed_prefix")
+        )
+
+        if plink_prefix:
+            bed_path = Path(str(plink_prefix) + ".bed")
+            bim_path = Path(str(plink_prefix) + ".bim")
+            fam_path = Path(str(plink_prefix) + ".fam")
+
+            missing = [
+                str(path)
+                for path in (bed_path, bim_path, fam_path)
+                if not path.exists()
+            ]
+
+            if missing:
+                raise FileNotFoundError(
+                    "Missing PLINK files: " + ", ".join(missing)
+                )
+
+            return ["--bed", str(plink_prefix)]
+
+        vcf = (
+            context.get_input("filtered_vcf")
+            or context.get_input("vcf")
+            or str(context.output_dir / "variants" / "filtered_variants.vcf.gz")
+        )
+
         if not Path(vcf).exists():
             raise FileNotFoundError(f"VCF file not found: {vcf}")
 
-        if not Path(phenotype).exists():
-            raise FileNotFoundError(f"Phenotype file not found: {phenotype}")
+        return ["--vcf", str(vcf)]
+
+    def execute(self, context: PipelineContext) -> None:
+        phenotype = self._get_phenotype(context)
 
         out_dir = context.output_dir / "gwas"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -47,14 +81,13 @@ class GWASStep(PipelineStep):
         method = (
             context.config.get("gwas", {}).get("method")
             or context.get_tool("gwas_method")
-            or "fastlmm"
+            or "FaST-LMM"
         )
 
         cmd = [
             "plantomicsgwas",
             "gwas",
-            "--vcf",
-            str(vcf),
+            *self._build_input_args(context),
             "--pheno",
             str(phenotype),
             "--algo",
@@ -69,6 +102,8 @@ class GWASStep(PipelineStep):
         )
 
         if covariates:
+            if not Path(covariates).exists():
+                raise FileNotFoundError(f"Covariates file not found: {covariates}")
             cmd.extend(["--covar", str(covariates)])
 
         self.result.command = cmd
@@ -80,11 +115,16 @@ class GWASStep(PipelineStep):
             text=True,
         )
 
+        if proc.stdout:
+            print(proc.stdout)
+
         if proc.returncode != 0:
             raise RuntimeError(proc.stdout)
 
         self.add_output("gwas_dir", str(out_dir))
         self.add_output("gwas_results", str(out_dir / "gwas_results.csv"))
+        self.add_output("manhattan_plot", str(out_dir / "manhattan_plot.png"))
+        self.add_output("qq_plot", str(out_dir / "qq_plot.png"))
 
         self.result.message = "GWAS analysis completed successfully."
 
@@ -94,13 +134,42 @@ class BatchGWASStep(PipelineStep):
     name = "Batch GWAS"
     description = "Run GWAS across multiple traits."
 
-    def execute(self, context: PipelineContext) -> None:
+    def _build_input_args(self, context: PipelineContext) -> list[str]:
+        plink_prefix = (
+            context.get_input("plink_prefix")
+            or context.get_input("bed_prefix")
+        )
+
+        if plink_prefix:
+            bed_path = Path(str(plink_prefix) + ".bed")
+            bim_path = Path(str(plink_prefix) + ".bim")
+            fam_path = Path(str(plink_prefix) + ".fam")
+
+            missing = [
+                str(path)
+                for path in (bed_path, bim_path, fam_path)
+                if not path.exists()
+            ]
+
+            if missing:
+                raise FileNotFoundError(
+                    "Missing PLINK files: " + ", ".join(missing)
+                )
+
+            return ["--bed", str(plink_prefix)]
+
         vcf = (
             context.get_input("filtered_vcf")
             or context.get_input("vcf")
             or str(context.output_dir / "variants" / "filtered_variants.vcf.gz")
         )
 
+        if not Path(vcf).exists():
+            raise FileNotFoundError(f"VCF file not found: {vcf}")
+
+        return ["--vcf", str(vcf)]
+
+    def execute(self, context: PipelineContext) -> None:
         phenotype = (
             context.get_input("phenotype_file")
             or context.get_input("phenotype")
@@ -109,9 +178,6 @@ class BatchGWASStep(PipelineStep):
 
         if not phenotype:
             raise ValueError("Missing required input: phenotype_file")
-
-        if not Path(vcf).exists():
-            raise FileNotFoundError(f"VCF file not found: {vcf}")
 
         if not Path(phenotype).exists():
             raise FileNotFoundError(f"Phenotype file not found: {phenotype}")
@@ -122,8 +188,7 @@ class BatchGWASStep(PipelineStep):
         cmd = [
             "plantomicsgwas",
             "batch-gwas",
-            "--vcf",
-            str(vcf),
+            *self._build_input_args(context),
             "--pheno",
             str(phenotype),
             "--out",
@@ -136,6 +201,8 @@ class BatchGWASStep(PipelineStep):
         )
 
         if covariates:
+            if not Path(covariates).exists():
+                raise FileNotFoundError(f"Covariates file not found: {covariates}")
             cmd.extend(["--covar", str(covariates)])
 
         self.result.command = cmd
@@ -146,6 +213,9 @@ class BatchGWASStep(PipelineStep):
             stderr=subprocess.STDOUT,
             text=True,
         )
+
+        if proc.stdout:
+            print(proc.stdout)
 
         if proc.returncode != 0:
             raise RuntimeError(proc.stdout)

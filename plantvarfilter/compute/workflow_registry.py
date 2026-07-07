@@ -100,9 +100,9 @@ WORKFLOW_STEPS: Dict[str, WorkflowStep] = {
         "gwas", "GWAS Analysis",
         "plantvarfilter.gwas_pipeline", "association_analysis",
         "Run genome-wide association analysis.",
-        ["bcftools_processing"],
-        ["filtered_vcf", "phenotype_file"],
-        ["covariates_file", "method", "threads"],
+        [],
+        ["plink_prefix", "phenotype_file"],
+        ["filtered_vcf", "covariates_file", "method", "threads"],
         ["gwas_results", "manhattan_plot", "qq_plot"],
     ),
 
@@ -187,7 +187,6 @@ WORKFLOW_STEPS: Dict[str, WorkflowStep] = {
     ),
 }
 
-
 DEFAULT_HPC_WORKFLOW: List[str] = [
     "reference_indexing",
     "fastq_qc",
@@ -204,14 +203,12 @@ DEFAULT_HPC_WORKFLOW: List[str] = [
     "plots",
 ]
 
-
 PANGENOME_WORKFLOW: List[str] = [
     "pav_matrix",
     "vcf_pav",
     "pangwas",
     "pangwas_plots",
 ]
-
 
 FULL_WORKFLOW: List[str] = DEFAULT_HPC_WORKFLOW + PANGENOME_WORKFLOW
 
