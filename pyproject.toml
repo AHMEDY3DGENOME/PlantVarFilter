@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "PlantOmicsGwas"
-version = "0.2.4"
+version = "1.2.7"
 description = "Integrated GWAS, genomic prediction, GUI, CLI, Compute Engine, and HPC pipeline for plant genomics."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
