@@ -5,6 +5,7 @@ Command-line entry point for the headless Compute/HPC engine.
 """
 
 import argparse
+import platform
 import sys
 
 from plantvarfilter.compute.config_loader import load_config
@@ -76,6 +77,10 @@ def _manager(config_path: str) -> HPCManager:
     return HPCManager(config=config, config_path=config_path)
 
 
+def _is_windows() -> bool:
+    return platform.system().lower() == "windows"
+
+
 def command_run(args: argparse.Namespace) -> int:
     try:
         run_workflow(config_path=args.config, dry_run=args.dry_run)
@@ -98,6 +103,18 @@ def command_write_job(args: argparse.Namespace) -> int:
 
 def command_submit(args: argparse.Namespace) -> int:
     try:
+        if _is_windows() and not args.no_submit:
+            print()
+            print("HPC scheduler submission is not supported directly on Windows.")
+            print()
+            print("Use this command to generate the job script:")
+            print("  plantomicsgwas-compute write-job --config <config.yaml>")
+            print()
+            print("Then copy the generated .slurm/.pbs/.lsf file to your HPC cluster")
+            print("and submit it there using sbatch, qsub, or bsub.")
+            print()
+            return 1
+
         manager = _manager(args.config)
         result = manager.submit(
             output_path=args.out,
