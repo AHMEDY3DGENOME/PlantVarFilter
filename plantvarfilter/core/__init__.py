@@ -9,10 +9,10 @@ from .runner import PipelineRunner
 from .step import PipelineStep
 
 from .pipeline_factory import (
-    PIPELINE_STEP_REGISTRY,
     create_step,
     create_steps,
     list_available_steps,
+    step_is_installed,
 )
 
 __version__ = "1.0.0"
@@ -24,8 +24,8 @@ __all__ = [
     "StepResult",
     "PipelineStep",
     "PipelineRunner",
-    "PIPELINE_STEP_REGISTRY",
     "create_step",
     "create_steps",
     "list_available_steps",
+    "step_is_installed",
 ]
