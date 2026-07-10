@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "PlantOmicsGwas"
-version = "1.2.7"
+version = "1.2.8"
 description = "Integrated GWAS, genomic prediction, GUI, CLI, Compute Engine, and HPC pipeline for plant genomics."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
@@ -86,6 +86,7 @@ all = [
 plantomicsgwas = "plantvarfilter.cli:main"
 plantomicsgwas-gui = "plantvarfilter.main_ui:main"
 plantomicsgwas-compute = "plantvarfilter.compute.compute_cli:main"
+plantomicsgwas-setup-env = "plantvarfilter.setup_env:main"
 
 [project.urls]
 Homepage = "https://github.com/AHMEDY3DGENOME/PlantOmicsGWAS"
@@ -103,5 +104,6 @@ include = ["plantvarfilter*"]
 [tool.setuptools.package-data]
 plantvarfilter = [
     "assets/**/*",
-    "windows/*.ini"
+    "windows/*.ini",
+    "install_plantomicsgwas.sh"
 ]
