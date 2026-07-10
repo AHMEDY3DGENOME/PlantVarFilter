@@ -34,10 +34,19 @@ class ReferenceIndexingStep(PipelineStep):
         if not reference_path.exists():
             raise FileNotFoundError(f"Reference FASTA not found: {reference_path}")
 
-        out_dir = context.output_dir / "reference_index"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
         ref_cfg = context.config.get("reference", {})
+
+        # Optional: reuse indexes across multiple runs/experiments by pointing
+        # every run at the same shared directory. If not set, behavior is
+        # unchanged from before -- each run gets its own isolated
+        # "reference_index" folder under that run's output.dir.
+        shared_index_dir = ref_cfg.get("shared_index_dir")
+        if shared_index_dir:
+            out_dir = Path(shared_index_dir).expanduser()
+        else:
+            out_dir = context.output_dir / "reference_index"
+
+        out_dir.mkdir(parents=True, exist_ok=True)
 
         build_mmi = bool(ref_cfg.get("build_mmi", True))
         build_bt2 = bool(ref_cfg.get("build_bt2", True))
