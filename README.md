@@ -1,19 +1,21 @@
 # PlantOmicsGwas: An Integrated GWAS, Genomic Prediction, and Pangenome-Based Association Pipeline for Plant Genomes
 
+
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)]()
 [![Status](https://img.shields.io/badge/status-Early%20Demonstration%20Release-orange)]()
+[![Version](https://img.shields.io/badge/version-1.2.9-blue)]()
 
 ---
 
 ## Developers & Contributors
 
-| Developer | Role | Affiliation |
-|---|---|---|
-| **Ahmed Yassin** | Computational Biologist, PhD Candidate |  |
+| Developer | Role | Affiliation                                                                             |
+|---|---|-----------------------------------------------------------------------------------------|
+| **Ahmed Yassin** | Computational Biologist, PhD Candidate | --                                                                                      |
 | **Falak Sher Khan, PhD** | Computational Biologist | Ye-Lab, Peking University Institute of Advanced Agricultural Sciences (PKU-IAAS), China |
 
-**Contact:** ahmedyassin300@outlook.com · falak.khan@pku.edu.cn
+**Contact:** ahmedyassin300@outlook.com · falakmahman@gmail.com
 
 ---
 
@@ -33,13 +35,14 @@
 4. [Requirements](#requirements)
 5. [Installation](#installation)
 6. [Quick Start](#quick-start)
-7. [Two Paths to GWAS: Linear Reference vs. Pangenome](#two-paths-to-gwas-linear-reference-vs-pangenome)
-8. [Running on HPC Clusters (SLURM/PBS/LSF)](#running-on-hpc-clusters-slurmpbslsf)
-9. [Module Reference & Example Configs](#module-reference--example-configs)
-10. [Project Structure](#project-structure)
-11. [Troubleshooting / FAQ](#troubleshooting--faq)
-12. [Citation](#citation)
-13. [License](#license)
+7. [Test: Real GWAS Run Walkthrough](#test-real-gwas-run-walkthrough)
+8. [Two Paths to GWAS: Linear Reference vs. Pangenome](#two-paths-to-gwas-linear-reference-vs-pangenome)
+9. [Running on HPC Clusters (SLURM/PBS/LSF)](#running-on-hpc-clusters-slurmpbslsf)
+10. [Module Reference & Example Configs](#module-reference--example-configs)
+11. [Project Structure](#project-structure)
+12. [Troubleshooting / FAQ](#troubleshooting--faq)
+13. [Citation](#citation)
+14. [License](#license)
 
 ---
 
@@ -78,7 +81,7 @@ PlantOmicsGwas provides the following modules, accessible through the desktop GU
 
 ---
 
-## ✅ Testing Status
+##  Testing Status
 
 This table reflects the verified state of the software as of this release. All 17 Compute Engine workflow steps, all three job schedulers (SLURM, PBS, LSF), and the HPC array-job and dependency-chain features have been tested end-to-end by running real jobs through the full pipeline — job submission through the scheduler, execution on a worker node, and inspection of the produced output files.
 
@@ -128,9 +131,9 @@ This table reflects the verified state of the software as of this release. All 1
 ## Requirements
 
 - **OS:** Linux (primary target; Windows and macOS supported for local/GUI use)
-- **Python:** 3.10, 3.11, or 3.12 (see note on `fastlmm` compatibility below)
+- **Python:** 3.10, 3.11, or 3.12 
 - **Disk space:** A few GB for the software and its dependencies; genome/read data storage requirements depend on your dataset (a single reference genome index for a ~500 Mbp plant genome uses ~1 GB)
-- **For HPC use:** A SLURM cluster (PBS/LSF present but not yet fully verified — see Testing Status)
+- **For HPC use:** A SLURM cluster (PBS/LSF present but not yet fully verified - still working on some techniques — see Testing Status)
 
 > **Python 3.12 note:** `fastlmm` (used by the FaST-LMM GWAS/prediction algorithm) declares official support only for Python < 3.12 in its packaging metadata. In our own testing it built and ran successfully from source on Python 3.11 within a dedicated conda environment (the default created by the installer below). If you build your own environment on Python 3.12, verify `fastlmm` installs correctly before relying on it.
 
@@ -138,16 +141,32 @@ This table reflects the verified state of the software as of this release. All 1
 
 ## Installation
 
+# install & Test video tutorial:
+[Download & See the video from here](https://drive.google.com/drive/folders/1Pwus1VXtihw36gyOZm-gBU3zNUatQVv5?usp=sharing)
+
 ### Recommended: One-command setup
 
 This installs a dedicated conda environment with every required bioinformatics tool (samtools, bcftools, bowtie2, minimap2, plink, plink2), installs PlantOmicsGwas with all optional extras, verifies everything works, and drops you directly into a ready-to-use activated shell.
 
 ```bash
+# 1. Make sure pip is available and up to date
+python3 -m ensurepip --upgrade
+python3 -m pip install --upgrade pip
+
+# 2. Install PlantOmicsGwas from PyPI
 pip install plantomicsgwas
+
+# 3. Set up the full environment (conda, all bioinformatics tools, all optional extras)
 plantomicsgwas-setup-env
 ```
 
-That's it — two commands, no manual conda setup, no separate tool installation. When it finishes, you will be inside a new shell with everything activated and ready to run.
+That's it — three simple commands, no manual conda setup, no separate tool installation. `plantomicsgwas-setup-env` will:
+
+1. Install Miniforge (conda) if it isn't already present
+2. Create a dedicated environment with samtools, bcftools, bowtie2, minimap2, plink, and plink2
+3. Install PlantOmicsGwas with all optional extras (fastlmm, xgboost, pysnptools, geneview, cyvcf2)
+4. Verify every tool and the CLI actually work, printing a clear report
+5. Drop you into a new shell with everything already activated and ready to run
 
 To use a custom environment name:
 ```bash
@@ -253,6 +272,109 @@ plantomicsgwas-compute run --config my_gwas.yaml
 ```
 
 This produces `gwas_results.csv`, `manhattan_plot.png`, and `qq_plot.png` in the output directory.
+
+---
+
+## Test: Real GWAS Run Walkthrough
+
+This section documents an actual GWAS run performed with PlantOmicsGwas, starting from a raw multi-sample VCF (derived from a pangenome variant caller) and a phenotype file, all the way to final association results. Every command below was executed and produced real output.
+
+### 1. Starting data
+
+- A multi-sample VCF: `merged.vgCall.vcf`
+- A phenotype file (FID, IID, trait value): `phenotype_fastlmm.txt`
+
+### 2. Normalize and filter the VCF
+
+Multi-allelic sites are split and only `PASS` variants are kept — this step matters: skipping it can silently reduce the number of variants that make it through the downstream PLINK conversion.
+
+```bash
+bcftools norm -m -both -Oz -o merged.norm.vcf.gz merged.vgCall.vcf
+bcftools view -f PASS merged.norm.vcf.gz -Oz -o merged.filtered.vcf.gz
+tabix -p vcf merged.filtered.vcf.gz
+```
+
+### 3. Convert to PLINK format
+
+```bash
+plink --vcf merged.filtered.vcf.gz \
+      --make-bed \
+      --allow-extra-chr \
+      --double-id \
+      --out plink_data
+```
+
+### 4. Configure the GWAS run
+
+```yaml
+project:
+  name: gwas_demo
+  version: "1.0"
+
+input:
+  plink_prefix: /data/plink_data
+  phenotype_file: /data/phenotype_fastlmm.txt
+
+output:
+  dir: /data/results/gwas_demo
+  logs_dir: /data/results/gwas_demo/logs
+
+compute:
+  threads: 4
+  memory: 4G
+
+gwas:
+  method: FaST-LMM
+
+steps:
+  reference_indexing: false
+  fastq_qc: false
+  alignment: false
+  bam_processing: false
+  variant_calling: false
+  bcftools_processing: false
+  vcf_quality: false
+  annotation: false
+  gwas: true
+  batch_gwas: false
+  genomic_prediction: false
+  ld_analysis: false
+  pav_matrix: false
+  vcf_pav: false
+  pangwas: false
+  pangwas_plots: false
+  plots: false
+```
+
+### 5. Run it
+
+```bash
+plantomicsgwas-compute run --config gwas_demo.yaml
+```
+
+### 6. Result
+
+The run completed successfully with the following summary:
+
+```
+Status : SUCCESS | Runtime: 57.22s
+Message: Completed successfully.
+Outputs:
+  - gwas_results: /data/results/gwas_demo/gwas/gwas_results.csv
+  - manhattan_plot: /data/results/gwas_demo/gwas/manhattan_plot.png
+  - qq_plot: /data/results/gwas_demo/gwas/qq_plot.png
+
+Pipeline Summary
+==================================================
+Success          : True
+Total steps      : 1
+Successful steps : 1
+Failed steps     : 0
+Runtime seconds  : 57.22
+==================================================
+```
+
+**53,184 variants** were tested for association using the **FaST-LMM** algorithm, with both a Manhattan plot and a QQ plot generated automatically alongside the results table. The same configuration structure works identically whether run locally (`run`) or submitted to an HPC scheduler (`submit`) — see the next section for HPC-specific usage.
 
 ---
 
