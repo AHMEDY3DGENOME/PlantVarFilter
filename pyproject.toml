@@ -2,9 +2,10 @@
 requires = ["setuptools>=70.0", "wheel", "build"]
 build-backend = "setuptools.build_meta"
 
+
 [project]
 name = "PlantOmicsGwas"
-version = "1.2.10"
+version = "1.0.2"
 description = "Integrated GWAS, genomic prediction, GUI, CLI, Compute Engine, and HPC pipeline for plant genomics."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
@@ -59,6 +60,7 @@ dependencies = [
     "pyyaml>=6.0"
 ]
 
+
 [project.optional-dependencies]
 ml = [
     "xgboost>=2.0"
@@ -82,28 +84,36 @@ all = [
     "pyyaml>=6.0"
 ]
 
+
 [project.scripts]
 plantomicsgwas = "plantvarfilter.cli:main"
 plantomicsgwas-gui = "plantvarfilter.main_ui:main"
 plantomicsgwas-compute = "plantvarfilter.compute.compute_cli:main"
 plantomicsgwas-setup-env = "plantvarfilter.setup_env:main"
 
+
 [project.urls]
-Homepage = "https://github.com/AHMEDY3DGENOME/PlantOmicsGWAS"
-Documentation = "https://github.com/AHMEDY3DGENOME/PlantOmicsGWAS/wiki"
-Repository = "https://github.com/AHMEDY3DGENOME/PlantOmicsGWAS"
-"Issue Tracker" = "https://github.com/AHMEDY3DGENOME/PlantOmicsGWAS/issues"
+Homepage = "https://github.com/plantomicsgwas1-boop/PlantOmicsGwas_V1"
+Documentation = "https://github.com/plantomicsgwas1-boop/PlantOmicsGwas_V1/wiki"
+Repository = "https://github.com/plantomicsgwas1-boop/PlantOmicsGwas_V1"
+"Source Code" = "https://github.com/plantomicsgwas1-boop/PlantOmicsGwas_V1.git"
+"Issue Tracker" = "https://github.com/plantomicsgwas1-boop/PlantOmicsGwas_V1/issues"
+
 
 [tool.setuptools]
 include-package-data = true
+
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["plantvarfilter*"]
 
+
 [tool.setuptools.package-data]
 plantvarfilter = [
     "assets/**/*",
-    "windows/*.ini",
+    "linux/*",
+    "windows/*",
+    "mac/*",
     "install_plantomicsgwas.sh"
 ]

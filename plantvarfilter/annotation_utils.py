@@ -2,6 +2,7 @@
 import os
 import gzip
 import io
+import re
 from typing import Dict, Tuple, Optional
 
 import numpy as np
@@ -31,6 +32,18 @@ class Annotator:
         return open(path, "r", encoding="utf-8", errors="replace")
 
     @staticmethod
+    def _normalize_chrom(chrom: str) -> str:
+        """
+        Strip a leading 'chr'/'Chr'/'CHR' prefix if present. Used consistently
+        on BOTH the annotation (GTF/GFF) chromosome names and the query
+        (GWAS results) chromosome names, so the two sides are guaranteed to
+        use the same representation before matching. Names where 'chr' is
+        not a true prefix (e.g. PanSN-style 'VHP#1#chr01') are correctly
+        left untouched, since there is no 'chr' prefix to remove there.
+        """
+        return re.sub(r"^chr", "", str(chrom), flags=re.IGNORECASE)
+
+    @staticmethod
     def _parse_attrs(attr: str) -> Dict[str, str]:
         out = {}
         if not isinstance(attr, str):
@@ -40,7 +53,7 @@ class Annotator:
         # GFF style: key=value;key2=value2
         parts = []
         # try GFF k=v
-        if "=" in attr and ";" in attr:
+        if "=" in attr:
             parts = [p for p in attr.strip().split(";") if p.strip()]
             for p in parts:
                 if "=" in p:
@@ -85,9 +98,8 @@ class Annotator:
             raise ValueError("No 'gene' features found in supplied GTF/GFF.")
 
         df = pd.DataFrame(rows, columns=["Chr", "Start", "End", "GeneID", "GeneName", "Strand"])
-        # Normalize chromosome naming (remove 'chr' prefix if mixed)
-        if df["Chr"].str.startswith("chr").any():
-            df["Chr"] = df["Chr"].str.replace("^chr", "", regex=True)
+        # Normalize chromosome naming consistently (see _normalize_chrom)
+        df["Chr"] = df["Chr"].apply(self._normalize_chrom)
         self.genes_df = df
         return df
 
@@ -153,8 +165,8 @@ class Annotator:
         df = gwas_df.copy()
         if df[chr_col].dtype != object:
             df[chr_col] = df[chr_col].astype(str)
-        # normalize 'chr' prefix as index uses normalized strings
-        df[chr_col] = df[chr_col].str.replace("^chr", "", regex=True)
+        # normalize 'chr' prefix consistently - same procedure as load_gtf_or_gff
+        df[chr_col] = df[chr_col].apply(self._normalize_chrom)
 
         nearest_gene = []
         nearest_id = []
@@ -215,11 +227,11 @@ class Annotator:
             return df
         chrom, rest = region.split(":", 1)
         start, end = rest.split("-", 1)
-        chrom = chrom.replace("chr", "")
+        chrom = Annotator._normalize_chrom(chrom)
         start_i = int(start.replace(",", ""))
         end_i = int(end.replace(",", ""))
         df2 = df.copy()
         if df2[chr_col].dtype != object:
             df2[chr_col] = df2[chr_col].astype(str)
-        df2[chr_col] = df2[chr_col].str.replace("^chr", "", regex=True)
+        df2[chr_col] = df2[chr_col].apply(Annotator._normalize_chrom)
         return df2[(df2[chr_col] == chrom) & (df2[pos_col].between(start_i, end_i))]
