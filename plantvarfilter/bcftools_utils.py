@@ -72,6 +72,51 @@ class BCFtools:
         cmd = [self.tabix, "-f", "-p", "vcf", path]
         self._run(cmd, log)
 
+    def concat_vcfs(
+        self,
+        input_vcfs: List[str],
+        out_vcf: str,
+        log: LogFn = print,
+    ) -> str:
+        """
+        Concatenate multiple VCFs into a single VCF using `bcftools concat`.
+
+        Intended for pangenome/PGGB-style workflows that produce one VCF per
+        chromosome: instead of requiring the user to run `bcftools concat`
+        manually before using this package, callers can pass the list of
+        per-chromosome VCFs directly and get back a single merged file.
+
+        Inputs are expected to be non-overlapping (e.g. different
+        chromosomes) and share the same sample columns; this is bcftools
+        concat's normal use case and does not require pre-sorting across
+        files, only within each file.
+        """
+        self.ensure_bins(log)
+
+        if not input_vcfs:
+            raise BCFtoolsError("No input VCFs provided to concat_vcfs().")
+
+        for p in input_vcfs:
+            if not os.path.exists(p):
+                raise BCFtoolsError(f"VCF not found: {p}")
+
+        out_dir = os.path.dirname(os.path.abspath(out_vcf))
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
+        compressed_out = out_vcf.endswith(".gz")
+        cmd = [self.bcftools, "concat"]
+        cmd += ["-Oz"] if compressed_out else ["-Ov"]
+        cmd += ["-o", out_vcf, *input_vcfs]
+
+        self._run(cmd, log)
+
+        if not os.path.exists(out_vcf):
+            raise BCFtoolsError(f"bcftools concat did not produce output: {out_vcf}")
+
+        self._emit(log, f"Concatenated {len(input_vcfs)} VCF(s) -> {out_vcf}")
+        return out_vcf
+
     def preprocess(
         self,
         input_vcf: str,

@@ -14,6 +14,7 @@ Entry point (registered in pyproject.toml as 'plantvarfilter'):
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import logging
 import os
@@ -124,6 +125,33 @@ def _load_bed_pheno(bed_prefix: str, pheno_path: str):
     gwas = GWAS()
     bed_fixed = gwas.filter_out_missing(bed)
     return gwas, bed, bed_fixed, pheno, chrom_mapping
+
+
+def _resolve_vcf_inputs(vcf_args: List[str]) -> List[str]:
+    """
+    Accepts whatever argparse collected for a `--vcf` option declared with
+    nargs="+" and returns a list of absolute VCF file paths.
+
+    - If the user passed multiple explicit files, they are used as-is
+      (in the order given).
+    - If the user passed a single argument that is a directory, every
+      *.vcf / *.vcf.gz file inside it is collected and sorted by filename
+      (this covers the common pangenome layout of one VCF per chromosome,
+      e.g. chr1.vcf.gz, chr2.vcf.gz, ...).
+    """
+    if len(vcf_args) == 1 and os.path.isdir(vcf_args[0]):
+        directory = _abspath(vcf_args[0])
+        found = sorted(
+            glob.glob(os.path.join(directory, "*.vcf"))
+            + glob.glob(os.path.join(directory, "*.vcf.gz"))
+        )
+        if not found:
+            raise FileNotFoundError(
+                f"No .vcf/.vcf.gz files found in directory: {directory}"
+            )
+        return found
+
+    return [_abspath(p) for p in vcf_args]
 
 
 # ============================================================================
@@ -427,11 +455,25 @@ def _parser_vcf_qc(sp: argparse._SubParsersAction) -> None:
 def cmd_vcf2bed(args: argparse.Namespace) -> int:
     from plantvarfilter.gwas_pipeline import GWAS
 
-    gwas = GWAS()
+    log = make_logger(args)
+    vcf_paths = _resolve_vcf_inputs(args.vcf)
+
     out_prefix = _abspath(args.out)
     _ensure_dir(os.path.dirname(out_prefix))
+
+    if len(vcf_paths) > 1:
+        from plantvarfilter.bcftools_utils import BCFtools
+        log(f"Multiple VCFs detected ({len(vcf_paths)}); concatenating with bcftools...")
+        bcf = BCFtools()
+        bcf.ensure_bins(log)
+        merged_vcf = out_prefix + ".merged.vcf.gz"
+        vcf_to_use = bcf.concat_vcfs(vcf_paths, merged_vcf, log=log)
+    else:
+        vcf_to_use = vcf_paths[0]
+
+    gwas = GWAS()
     msg = gwas.vcf_to_bed(
-        vcf_file=_abspath(args.vcf),
+        vcf_file=vcf_to_use,
         id_file=_abspath(args.keep),
         file_out=out_prefix,
         maf=args.maf,
@@ -444,7 +486,11 @@ def cmd_vcf2bed(args: argparse.Namespace) -> int:
 def _parser_vcf2bed(sp: argparse._SubParsersAction) -> None:
     p = sp.add_parser("vcf2bed",
                       help="Convert VCF to PLINK BED with MAF/geno filtering.")
-    p.add_argument("--vcf", required=True)
+    p.add_argument("--vcf", required=True, nargs="+",
+                   help="One or more VCF/VCF.gz files, or a single directory "
+                        "containing chromosome-level VCFs (common in pangenome "
+                        "workflows). Multiple inputs are concatenated via "
+                        "bcftools before conversion.")
     p.add_argument("--out", required=True, help="Output PLINK prefix.")
     p.add_argument("--maf",  type=float, default=0.05)
     p.add_argument("--geno", type=float, default=0.10)

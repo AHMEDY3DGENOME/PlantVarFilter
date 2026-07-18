@@ -60,7 +60,7 @@ class LDAnalyzer:
         if bfile_prefix:
             cmd += ["--bfile", bfile_prefix]
         elif vcf_path:
-            cmd += ["--vcf", vcf_path]
+            cmd += ["--vcf", vcf_path, "--vcf-half-call", "missing"]
         else:
             raise LDAnalysisError("Either bfile_prefix or vcf_path must be provided")
         if keep_samples:

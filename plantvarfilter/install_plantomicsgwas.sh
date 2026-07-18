@@ -6,7 +6,7 @@
 #   1. Finds conda/mamba, or installs Miniforge if neither exists
 #   2. Creates a dedicated environment with every external bioinformatics
 #      tool the package needs (samtools, bcftools, bowtie2, minimap2,
-#      plink, plink2, htslib)
+#      plink, plink2, htslib) plus a build toolchain (cmake, compilers)
 #   3. Installs the plantomicsgwas Python package + optional extras
 #      (fastlmm, pysnptools, xgboost, geneview, cyvcf2)
 #   4. Verifies every tool and the CLI actually work
@@ -65,6 +65,11 @@ echo ""
 # ------------------------------------------------------------------
 # 2. Create (or reuse) the environment with all external tools
 # ------------------------------------------------------------------
+# NOTE (Issue 1.2 fix): cmake + a C/C++ compiler toolchain are included here
+# so that any package needing a source build later (e.g. xgboost, fastlmm,
+# pysnptools on platforms without a prebuilt wheel) has a working toolchain
+# from the start, instead of failing mid-way through step 3 with something
+# like "PermissionError: [Errno 13] Permission denied: 'cmake'".
 if conda env list | grep -qE "^${ENV_NAME}[[:space:]]"; then
     echo "[INFO] Environment '$ENV_NAME' already exists — reusing it."
 else
@@ -72,6 +77,7 @@ else
     "$CONDA_CMD" create -y -n "$ENV_NAME" \
         -c conda-forge -c bioconda \
         python="$PYTHON_VERSION" \
+        cmake compilers \
         samtools bcftools bowtie2 minimap2 plink plink2 htslib
 fi
 

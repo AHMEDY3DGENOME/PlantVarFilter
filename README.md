@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)]()
 [![Status](https://img.shields.io/badge/status-Early%20Demonstration%20Release-orange)]()
-[![Version](https://img.shields.io/badge/version-1.2.10-blue)]()
+[![Version](https://img.shields.io/badge/version-1.0.2-blue)]()
 
 ---
 
@@ -15,7 +15,7 @@
 | **Ahmed Yassin** | Computational Biologist, PhD Candidate | --                                                                                      |
 | **Falak Sher Khan, PhD** | Computational Biologist | Ye-Lab, Peking University Institute of Advanced Agricultural Sciences (PKU-IAAS), China |
 
-**Contact:** ahmedyassin300@outlook.com · falakmahman@gmail.com
+**Contact:** ahmedyassin300@outlook.com · falakmahmand@gmail.com
 
 ---
 
@@ -35,14 +35,15 @@
 4. [Requirements](#requirements)
 5. [Installation](#installation)
 6. [Quick Start](#quick-start)
-7. [Test: Real GWAS Run Walkthrough](#test-real-gwas-run-walkthrough)
-8. [Two Paths to GWAS: Linear Reference vs. Pangenome](#two-paths-to-gwas-linear-reference-vs-pangenome)
-9. [Running on HPC Clusters (SLURM/PBS/LSF)](#running-on-hpc-clusters-slurmpbslsf)
-10. [Module Reference & Example Configs](#module-reference--example-configs)
-11. [Project Structure](#project-structure)
-12. [Troubleshooting / FAQ](#troubleshooting--faq)
-13. [Citation](#citation)
-14. [License](#license)
+7. [Future Plan](#future-plan)
+8. [Test: Real GWAS Run Walkthrough](#test-real-gwas-run-walkthrough)
+9. [Two Paths to GWAS: Linear Reference vs. Pangenome](#two-paths-to-gwas-linear-reference-vs-pangenome)
+10. [Running on HPC Clusters (SLURM/PBS/LSF)](#running-on-hpc-clusters-slurmpbslsf)
+11. [Module Reference & Example Configs](#module-reference--example-configs)
+12. [Project Structure](#project-structure)
+13. [Troubleshooting / FAQ](#troubleshooting--faq)
+14. [Citation](#citation)
+15. [License](#license)
 
 ---
 
@@ -304,6 +305,18 @@ plink --vcf merged.filtered.vcf.gz \
       --out plink_data
 ```
 
+> **Recommended `--maf`/`--geno` for pangenome-derived VCFs:** pangenome/graph-derived
+> VCFs (e.g. from `vg call`) commonly have a much higher missing-genotype rate than
+> linear-reference VCFs. In our own testing, the default thresholds used by
+> `plantomicsgwas vcf2bed` (`--geno 0.10`, `--maf 0.05`) removed **more than 95% of
+> variants** on a pangenome dataset with an overall genotype call rate of only 33.8%.
+> For pangenome-derived data, start with more permissive thresholds and tighten them
+> only if needed:
+> ```bash
+> plantomicsgwas vcf2bed --vcf merged.filtered.vcf.gz --out plink_data \
+>     --geno 0.5 --maf 0.01
+> ```
+
 ### 4. Configure the GWAS run
 
 ```yaml
@@ -429,6 +442,14 @@ pangwas:
 
 > **Note:** if your PAV matrix is derived from a VCF produced by a graph-based variant caller (e.g. `vg call`), variant IDs may not follow the `chrN:pos` format expected by the plotting module. You may need to rename markers to a `chrN:pos` format before generating Pan-GWAS plots.
 
+> **Note:** if you convert a pangenome-derived VCF to PLINK format for SNP/indel-based
+> GWAS (rather than PAV-based Pan-GWAS), see the recommended `--maf`/`--geno` values in
+> the [Real GWAS Run Walkthrough](#test-real-gwas-run-walkthrough) section — the
+> default thresholds are tuned for linear-reference data and can discard the vast
+> majority of variants on pangenome-derived VCFs.
+
+## Future Plan
+Next version of PlantOmicsGwas will include the mapping of PanGenome of PanGenome with the user defined reference sequence.
 ---
 
 ## Running on HPC Clusters (SLURM/PBS/LSF)
@@ -480,6 +501,25 @@ reference:
 ```
 
 In our own testing, this reduced a repeat reference-indexing step from **680 seconds to 0.00 seconds** (confirmed via the checkpoint system: `Status: SKIPPED | Message: Skipped because checkpoint exists`).
+
+### Configuring temporary storage for large runs
+
+FaST-LMM (used by the default `FaST-LMM` GWAS algorithm) can write a large number of
+intermediate files to the system temporary directory during a run. On HPC systems,
+the default temporary location (often under `$HOME` or `/tmp`) is frequently subject
+to a small storage quota, which can cause an otherwise-correct analysis to fail with
+a disk-space or quota error. Point the temporary directory at a location with more
+available space (or fast local/RAM storage) by setting `TMPDIR` before running:
+
+```bash
+export TMPDIR=/dev/shm            # fast, RAM-backed, if it has enough space for your run
+# or
+export TMPDIR=/scratch/$USER/tmp  # a larger shared/scratch filesystem
+mkdir -p "$TMPDIR"
+```
+
+Set this in your job script (or `~/.bashrc` on the login node) before invoking
+`plantomicsgwas-compute` or `plantomicsgwas`.
 
 ### Realistic timing expectations
 
@@ -625,6 +665,18 @@ Increase the `hpc.time` value in your config. See the timing table above for rea
 
 **A job fails with `command not found` for `plantomicsgwas-compute` when run via SLURM.**
 Your conda environment is likely not visible from the compute node, or the job script did not activate it. Set `hpc.conda_env` to the *full path* of your environment (not just its name), and confirm the environment lives on storage shared across all nodes.
+
+**`vcf2bed` removed almost all my variants.**
+Pangenome-derived VCFs commonly have high missing-genotype rates, and the default
+`--geno 0.10 --maf 0.05` thresholds are tuned for linear-reference data. On a real
+pangenome dataset (33.8% overall genotype call rate), these defaults removed over 95%
+of variants. Try more permissive thresholds for pangenome data, e.g. `--geno 0.5 --maf 0.01`.
+
+**GWAS (FaST-LMM) fails on HPC with a disk-space or quota error.**
+FaST-LMM writes many intermediate files to the system temporary directory during a
+run, which can exceed HPC storage quotas on the default location. Set `TMPDIR` to a
+location with more space before running, e.g. `export TMPDIR=/dev/shm` or
+`export TMPDIR=/scratch/$USER/tmp`.
 
 ---
 

@@ -6,6 +6,7 @@ import glob
 import json
 import logging
 import subprocess
+import shutil
 from typing import Optional, Tuple, List
 
 import numpy as np
@@ -17,9 +18,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 
-from fastlmm.association import single_snp, single_snp_linreg
-from pysnptools.util import log_in_place
-import geneview as gv
 import gzip
 from bisect import bisect_left
 from plantvarfilter.helpers import HELPERS
@@ -40,11 +38,7 @@ def _read_lines_with_fallback(path: str) -> List[str]:
 
 
 def _which(exe: str) -> Optional[str]:
-    p = shutil.which(exe) if 'shutil' in sys.modules else None
-    if p:
-        return p
-    import shutil as _sh
-    return _sh.which(exe)
+    return shutil.which(exe)
 
 
 def _ensure_executable(path: str):
@@ -61,6 +55,93 @@ def _safe_float(x):
     except Exception:
         return np.nan
 
+def _sanitize_bim_chrom_names(bim_path: str) -> None:
+        """
+        bed_reader/pysnptools uses numpy.loadtxt to read .bim files, which
+        treats '#' as a comment marker and truncates the line at that point.
+        Chromosome/contig names using PanSN-style naming (e.g. 'sample#1#chr1',
+        common in pangenome/PGGB outputs) contain '#' as a literal character,
+        which corrupts column parsing downstream
+        (ValueError: invalid column index ... with N columns).
+        Replace '#' with '_' in the .bim file so it stays readable by
+        bed_reader, without touching the .bed genotype data itself.
+        """
+        if not os.path.exists(bim_path):
+            return
+        with open(bim_path, "r") as f:
+            lines = f.readlines()
+        if not any("#" in ln for ln in lines):
+            return
+        with open(bim_path, "w") as f:
+            for ln in lines:
+                f.write(ln.replace("#", "_"))
+
+def _regenerate_bim_variant_ids(bim_path: str) -> None:
+    """
+    PLINK's --set-missing-var-ids @:# only combines chromosome + position.
+    On pangenome/PGGB-derived VCFs, the "chromosome" field is often a graph
+    node-path token (e.g. '>5040991>5041189') rather than a true genomic
+    coordinate, so two distinct variants can end up sharing the exact same
+    chrom+pos combination and therefore the same generated ID
+    (Error: Duplicate ID '>5040991>5041189').
+    Rebuild each variant ID as {chr}_{pos}_{a1}_{a2} instead, using the
+    columns already present in the .bim file, so IDs stay unique even when
+    chrom+pos collide. If a collision still occurs (identical chrom+pos+
+    alleles), a numeric suffix is appended to guarantee uniqueness.
+    """
+    if not os.path.exists(bim_path):
+        return
+    with open(bim_path, "r") as f:
+        lines = f.readlines()
+
+    seen = {}
+    new_lines = []
+    for ln in lines:
+        parts = ln.split()
+        if len(parts) != 6:
+            new_lines.append(ln)
+            continue
+        chrom, _old_id, cm, pos, a1, a2 = parts
+        new_id = f"{chrom}_{pos}_{a1}_{a2}"
+        if new_id in seen:
+            seen[new_id] += 1
+            new_id = f"{new_id}_{seen[new_id]}"
+        else:
+            seen[new_id] = 0
+        parts[1] = new_id
+        new_lines.append("\t".join(parts) + "\n")
+
+    with open(bim_path, "w") as f:
+        f.writelines(new_lines)
+
+def _count_multiallelic_variants(vcf_file: str) -> int:
+    """
+    Scan a VCF (optionally .gz) and count records with more than one ALT
+    allele (multiallelic sites). PLINK 1.9's .bed/.bim format can only
+    represent two alleles per variant: on import it silently keeps only
+    the first ALT allele and converts any genotype referencing a different
+    ALT allele to missing, with no warning of its own. This is used to
+    warn the user before conversion, since PLINK gives no indication that
+    this happened. Returns -1 if the VCF could not be scanned.
+    """
+    try:
+        opener = gzip.open if vcf_file.endswith(".gz") else open
+        mode = "rt" if vcf_file.endswith(".gz") else "r"
+        count = 0
+        with opener(vcf_file, mode) as f:
+            for line in f:
+                if not line or line.startswith("#"):
+                    continue
+                fields = line.split("\t", 5)
+                if len(fields) < 5:
+                    continue
+                alt = fields[4]
+                if "," in alt:
+                    count += 1
+        return count
+    except Exception:
+        return -1
+
 
 class GWAS:
     def __init__(self):
@@ -71,19 +152,47 @@ class GWAS:
     # ---------------------------
     def vcf_to_bed(self, vcf_file, id_file, file_out, maf, geno):
         script_dir = os.path.dirname(__file__)
+
         if sys.platform.startswith('win'):
-            abs_file_path = os.path.join(script_dir, "windows", "plink")
+            bundled_path = os.path.join(script_dir, "windows", "plink.exe")
         elif sys.platform.startswith('linux'):
-            abs_file_path = os.path.join(script_dir, "linux", "plink")
-            _ensure_executable(abs_file_path)
+            bundled_path = os.path.join(script_dir, "linux", "plink")
         elif sys.platform.startswith('darwin'):
-            abs_file_path = os.path.join(script_dir, "mac", "plink")
-            _ensure_executable(abs_file_path)
+            bundled_path = os.path.join(script_dir, "mac", "plink")
         else:
             raise RuntimeError("Unsupported platform for PLINK binaries.")
 
+        if os.path.exists(bundled_path):
+            _ensure_executable(bundled_path)
+            abs_file_path = bundled_path
+        else:
+            system_plink = _which("plink")
+            if system_plink:
+                abs_file_path = system_plink
+            else:
+                raise RuntimeError(
+                    "PLINK executable not found.\n"
+                    f"  - Bundled path checked : {bundled_path}\n"
+                    "  - System PATH checked  : plink (not found via shutil.which)\n"
+                    "Install PLINK and ensure it is on PATH, or reinstall this package "
+                    "so the bundled binary is included."
+                )
+
         if not vcf_file or not os.path.exists(vcf_file):
             raise RuntimeError(f"VCF not found: {vcf_file}")
+
+        n_multiallelic = _count_multiallelic_variants(vcf_file)
+        if n_multiallelic > 0:
+            logging.warning(
+                f"[PLINK] {n_multiallelic} multiallelic variant(s) detected in "
+                f"the input VCF. PLINK 1.9's .bed/.bim format only supports 2 "
+                f"alleles per variant: it will silently keep just the first ALT "
+                f"allele for each of these variants, and any genotype that refers "
+                f"to a different ALT allele will be silently converted to missing "
+                f"(no error will be raised). To preserve these variants, split "
+                f"them first with 'bcftools norm -m -any <vcf>', or use PLINK 2 "
+                f"instead of PLINK 1.9."
+            )
 
         threads = "4"
         memory_mb = "16000"
@@ -91,9 +200,10 @@ class GWAS:
         cmd = [
             abs_file_path, "--vcf", vcf_file,
             "--make-bed", "--out", file_out,
-            "--allow-extra-chr", "--set-missing-var-ids", "@:#",
+            "--allow-extra-chr", "--set-missing-var-ids", "@:#:$1:$2",
             "--maf", str(maf), "--geno", str(geno),
             "--double-id",
+            "--vcf-half-call", "missing",
             "--threads", threads,
             "--memory", memory_mb,
         ]
@@ -119,12 +229,16 @@ class GWAS:
             raise RuntimeError("\n".join(msg))
 
         logging.info("[PLINK] conversion completed.")
+        _sanitize_bim_chrom_names(bim)
+        _regenerate_bim_variant_ids(bim)
         return stdout or "PLINK conversion completed."
+
 
     # ---------------------------
     # Utilities
     # ---------------------------
     def filter_out_missing(self, bed):
+        from pysnptools.util import log_in_place  # lazy import: only needed here
         sid_batch_size = 1000
         all_nan = []
         with log_in_place("read snp #", logging.INFO) as updater:
@@ -261,6 +375,7 @@ class GWAS:
     def run_gwas_lmm(self, bed_fixed, pheno, chrom_mapping, add_log,
                      gwas_result_name, algorithm, bed_file, cov_file, gb_goal,
                      kinship_path: Optional[str] = None):
+        from fastlmm.association import single_snp, single_snp_linreg  # lazy import: only needed here
         t1 = time.time()
         if gb_goal == 0:
             gb_goal = None
@@ -739,6 +854,7 @@ class GWAS:
             region_only_csv: str = None,
             title_suffix: str = None,
     ):
+        import geneview as gv  # lazy import: only needed here
         import math
         import re
 
